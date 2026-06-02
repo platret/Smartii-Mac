@@ -62,16 +62,21 @@ enum Providers {
             id: "openrouter",
             label: "OpenRouter",
             tier: "mixed",
-            defaultModel: "meta-llama/llama-3.3-70b-instruct:free",
+            defaultModel: "nvidia/nemotron-3-super-120b-a12b:free",
             models: [
+                "nvidia/nemotron-3-super-120b-a12b:free",
+                "qwen/qwen3-coder:free",
                 "meta-llama/llama-3.3-70b-instruct:free",
-                "google/gemini-2.0-flash-exp:free",
-                "qwen/qwen-2.5-vl-72b-instruct:free",
+                "openai/gpt-oss-120b:free",
+                "z-ai/glm-4.5-air:free",
+                "google/gemma-4-31b-it:free",
+                "moonshotai/kimi-k2.6:free",
+                "nvidia/nemotron-nano-12b-v2-vl:free",
                 "anthropic/claude-3.5-sonnet",
                 "openai/gpt-4o",
             ],
             keyURL: "https://openrouter.ai/keys",
-            instructions: "One key for many models, including free tiers. Screenshots use a free Gemini vision model."
+            instructions: "One key for many models. Default is NVIDIA Nemotron 3 Super (free, 1M context); any ':free' model costs nothing. Screenshots auto-use a free vision model (Gemma 4 / Kimi)."
         ),
         ProviderInfo(
             id: "huggingface",
@@ -125,11 +130,52 @@ enum Providers {
             keyURL: "https://www.perplexity.ai/settings/api",
             instructions: "Paid API key with live web search. Text only — cannot read screenshots."
         ),
+        ProviderInfo(
+            id: "ollama",
+            label: "Ollama (local)",
+            tier: "local",
+            defaultModel: "llama3.2",
+            models: [
+                "llama3.2",
+                "qwen2.5",
+                "llava",
+            ],
+            keyURL: "https://ollama.com/download",
+            instructions: "Runs models locally — no API key or internet needed. Install Ollama and pull a model. The llava model can read screenshots."
+        ),
     ]
 
     /// Look up provider metadata by id.
     static func info(_ id: String) -> ProviderInfo? {
         all.first { $0.id == id }
+    }
+
+    // MARK: - Shared URLSession (request timeouts)
+
+    /// A shared session with a ~60s per-request timeout, used by both the
+    /// blocking `call(...)` path and the streaming `stream(...)` path. A single
+    /// session is reused so connection pooling and SSE both benefit from the
+    /// same configuration.
+    private static let session: URLSession = {
+        let config = URLSessionConfiguration.default
+        config.timeoutIntervalForRequest = 60
+        config.timeoutIntervalForResource = 300
+        config.waitsForConnectivity = false
+        return URLSession(configuration: config)
+    }()
+
+    /// Whether a provider runs locally and therefore needs no API key.
+    private static func isLocal(_ providerId: String) -> Bool {
+        providerId == "ollama"
+    }
+
+    /// The key actually sent on the wire. Local providers (Ollama) accept any
+    /// bearer, so an empty user key is replaced with a harmless placeholder.
+    private static func wireKey(for providerId: String, userKey: String) -> String {
+        if isLocal(providerId) {
+            return userKey.isEmpty ? "ollama" : userKey
+        }
+        return userKey
     }
 
     // MARK: - Data URL helper
@@ -160,7 +206,7 @@ enum Providers {
         let data: Data
         let response: URLResponse
         do {
-            (data, response) = try await URLSession.shared.data(for: request)
+            (data, response) = try await session.data(for: request)
         } catch {
             throw SmartiiError.message(error.localizedDescription)
         }
@@ -235,9 +281,14 @@ enum Providers {
             throw SmartiiError.message("Unknown provider \"\(providerId)\".")
         }
 
-        let trimmedKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedKey.isEmpty else {
-            throw SmartiiError.message("No API key set for \(info.label). Add one in Smartii settings.")
+        var trimmedKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Local providers (Ollama) need no key; an empty/placeholder key is OK.
+        if isLocal(providerId) {
+            trimmedKey = wireKey(for: providerId, userKey: trimmedKey)
+        } else {
+            guard !trimmedKey.isEmpty else {
+                throw SmartiiError.message("No API key set for \(info.label). Add one in Smartii settings.")
+            }
         }
 
         // Resolve the model: caller-supplied (non-empty) else the provider default.
@@ -265,7 +316,7 @@ enum Providers {
             )
         case "openrouter":
             // Vision fallback to a free Gemini vision model.
-            let model = image == nil ? chosenModel : "google/gemini-2.0-flash-exp:free"
+            let model = image == nil ? chosenModel : "google/gemma-4-31b-it:free"
             return try await callOpenAIChat(
                 endpoint: "https://openrouter.ai/api/v1/chat/completions",
                 apiKey: trimmedKey, prompt: prompt, image: image, model: model,
@@ -294,8 +345,332 @@ enum Providers {
                 throw SmartiiError.message("\(info.label) can't read images. Switch to Gemini or Groq in Smartii settings.")
             }
             return try await callHuggingFace(apiKey: trimmedKey, prompt: prompt, model: chosenModel)
+        case "ollama":
+            // Vision: only llava can see; route screenshots to it.
+            let model = image == nil ? chosenModel : "llava"
+            return try await callOpenAIChat(
+                endpoint: "http://localhost:11434/v1/chat/completions",
+                apiKey: trimmedKey, prompt: prompt, image: image, model: model, extraHeaders: [:]
+            )
         default:
             throw SmartiiError.message("Unsupported provider \"\(providerId)\".")
+        }
+    }
+
+    // MARK: - Streaming dispatch
+
+    /// Streams the answer for the given provider, invoking `onDelta` with each
+    /// text chunk as it arrives. The caller is responsible for hopping to the
+    /// MainActor inside `onDelta` if it touches UI.
+    ///
+    /// Behavior:
+    /// - OpenAI-compatible families (openai / groq / openrouter / ollama),
+    ///   Gemini, and Anthropic stream natively via SSE.
+    /// - Perplexity and Hugging Face have no streaming path here, so they fall
+    ///   back to `call(...)` and emit the entire answer as a single delta.
+    /// - Vision auto-routing matches `call(...)` exactly.
+    /// - Honors Task cancellation: throws `CancellationError` if the surrounding
+    ///   Task is cancelled before or during streaming.
+    static func stream(
+        providerId: String,
+        apiKey: String,
+        prompt: String,
+        imageDataURL: String?,
+        model: String?,
+        onDelta: @escaping @Sendable (String) -> Void
+    ) async throws {
+        guard let info = info(providerId) else {
+            throw SmartiiError.message("Unknown provider \"\(providerId)\".")
+        }
+
+        try Task.checkCancellation()
+
+        var trimmedKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        if isLocal(providerId) {
+            trimmedKey = wireKey(for: providerId, userKey: trimmedKey)
+        } else {
+            guard !trimmedKey.isEmpty else {
+                throw SmartiiError.message("No API key set for \(info.label). Add one in Smartii settings.")
+            }
+        }
+
+        // Resolve the model: caller-supplied (non-empty) else the provider default.
+        let requested = (model?.trimmingCharacters(in: .whitespacesAndNewlines)).flatMap { $0.isEmpty ? nil : $0 }
+        let chosenModel = requested ?? info.defaultModel
+
+        // Decode the screenshot once if present.
+        var image: (mime: String, base64: String)?
+        if let dataURL = imageDataURL {
+            guard let parts = splitDataURL(dataURL) else {
+                throw SmartiiError.message("Invalid screenshot data.")
+            }
+            image = parts
+        }
+
+        switch providerId {
+        case "gemini":
+            try await streamGemini(apiKey: trimmedKey, prompt: prompt, image: image, model: chosenModel, onDelta: onDelta)
+
+        case "groq":
+            let m = image == nil ? chosenModel : "meta-llama/llama-4-scout-17b-16e-instruct"
+            try await streamOpenAIChat(
+                endpoint: "https://api.groq.com/openai/v1/chat/completions",
+                apiKey: trimmedKey, prompt: prompt, image: image, model: m, extraHeaders: [:], onDelta: onDelta
+            )
+
+        case "openrouter":
+            let m = image == nil ? chosenModel : "google/gemma-4-31b-it:free"
+            try await streamOpenAIChat(
+                endpoint: "https://openrouter.ai/api/v1/chat/completions",
+                apiKey: trimmedKey, prompt: prompt, image: image, model: m,
+                extraHeaders: [
+                    "HTTP-Referer": "https://github.com/platret/Smartii-Mac",
+                    "X-Title": "Smartii",
+                ],
+                onDelta: onDelta
+            )
+
+        case "openai":
+            let visionModels: Set<String> = ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo"]
+            let m = (image == nil || visionModels.contains(chosenModel)) ? chosenModel : "gpt-4o-mini"
+            try await streamOpenAIChat(
+                endpoint: "https://api.openai.com/v1/chat/completions",
+                apiKey: trimmedKey, prompt: prompt, image: image, model: m, extraHeaders: [:], onDelta: onDelta
+            )
+
+        case "ollama":
+            let m = image == nil ? chosenModel : "llava"
+            try await streamOpenAIChat(
+                endpoint: "http://localhost:11434/v1/chat/completions",
+                apiKey: trimmedKey, prompt: prompt, image: image, model: m, extraHeaders: [:], onDelta: onDelta
+            )
+
+        case "anthropic":
+            try await streamAnthropic(apiKey: trimmedKey, prompt: prompt, image: image, model: chosenModel, onDelta: onDelta)
+
+        case "perplexity":
+            // No streaming path: fall back to the blocking call and emit once.
+            if image != nil {
+                throw SmartiiError.message("\(info.label) can't read images. Switch to Gemini or Groq in Smartii settings.")
+            }
+            let answer = try await call(
+                providerId: providerId, apiKey: apiKey, prompt: prompt, imageDataURL: imageDataURL, model: model
+            )
+            try Task.checkCancellation()
+            onDelta(answer)
+
+        case "huggingface":
+            if image != nil {
+                throw SmartiiError.message("\(info.label) can't read images. Switch to Gemini or Groq in Smartii settings.")
+            }
+            let answer = try await call(
+                providerId: providerId, apiKey: apiKey, prompt: prompt, imageDataURL: imageDataURL, model: model
+            )
+            try Task.checkCancellation()
+            onDelta(answer)
+
+        default:
+            throw SmartiiError.message("Unsupported provider \"\(providerId)\".")
+        }
+    }
+
+    // MARK: - SSE helpers
+
+    /// Issues `request` and iterates its response as a byte stream, yielding one
+    /// trimmed line at a time. Validates the HTTP status (reading the body for an
+    /// error message on failure) and checks Task cancellation on every line.
+    private static func sseLines(
+        _ request: URLRequest,
+        _ handleLine: (String) throws -> Void
+    ) async throws {
+        let (bytes, response): (URLSession.AsyncBytes, URLResponse)
+        do {
+            (bytes, response) = try await session.bytes(for: request)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            if (error as? URLError)?.code == .cancelled { throw CancellationError() }
+            throw SmartiiError.message(error.localizedDescription)
+        }
+
+        guard let http = response as? HTTPURLResponse else {
+            throw SmartiiError.message("No HTTP response")
+        }
+        guard (200...299).contains(http.statusCode) else {
+            // Drain the error body so we can surface a useful message.
+            var collected = Data()
+            for try await byte in bytes { collected.append(byte) }
+            throw SmartiiError.message(serverErrorText(from: collected) ?? "HTTP \(http.statusCode)")
+        }
+
+        do {
+            for try await line in bytes.lines {
+                try Task.checkCancellation()
+                try handleLine(line)
+            }
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch let e as SmartiiError {
+            throw e
+        } catch {
+            if (error as? URLError)?.code == .cancelled { throw CancellationError() }
+            throw SmartiiError.message(error.localizedDescription)
+        }
+    }
+
+    /// Extracts the JSON payload from an SSE "data:" line, returning nil for
+    /// blank lines, comments, the "[DONE]" sentinel, or non-data lines.
+    private static func sseData(from line: String) -> [String: Any]? {
+        guard line.hasPrefix("data:") else { return nil }
+        let payload = line.dropFirst("data:".count).trimmingCharacters(in: .whitespaces)
+        if payload.isEmpty || payload == "[DONE]" { return nil }
+        guard let data = payload.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return nil }
+        return obj
+    }
+
+    // MARK: - OpenAI-compatible streaming (openai / groq / openrouter / ollama)
+
+    private static func streamOpenAIChat(
+        endpoint: String, apiKey: String, prompt: String,
+        image: (mime: String, base64: String)?, model: String,
+        extraHeaders: [String: String], onDelta: @escaping @Sendable (String) -> Void
+    ) async throws {
+        guard let url = URL(string: endpoint) else {
+            throw SmartiiError.message("Invalid request URL.")
+        }
+
+        let content: Any
+        if let image = image {
+            content = [
+                ["type": "text", "text": prompt],
+                ["type": "image_url", "image_url": ["url": "data:\(image.mime);base64,\(image.base64)"]],
+            ] as [[String: Any]]
+        } else {
+            content = prompt
+        }
+
+        let body: [String: Any] = [
+            "model": model,
+            "max_tokens": 2048,
+            "stream": true,
+            "messages": [["role": "user", "content": content]],
+        ]
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+        for (k, v) in extraHeaders { request.setValue(v, forHTTPHeaderField: k) }
+        request.httpBody = try serialize(body)
+
+        try await sseLines(request) { line in
+            guard let obj = sseData(from: line) else { return }
+            // An error can arrive mid-stream as {"error": {...}}.
+            if let err = obj["error"] as? [String: Any], let msg = err["message"] as? String {
+                throw SmartiiError.message(msg)
+            }
+            guard let choices = obj["choices"] as? [[String: Any]],
+                  let first = choices.first,
+                  let delta = first["delta"] as? [String: Any],
+                  let text = delta["content"] as? String, !text.isEmpty
+            else { return }
+            onDelta(text)
+        }
+    }
+
+    // MARK: - Gemini streaming
+
+    private static func streamGemini(
+        apiKey: String, prompt: String, image: (mime: String, base64: String)?,
+        model: String, onDelta: @escaping @Sendable (String) -> Void
+    ) async throws {
+        guard let encodedKey = apiKey.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
+              let url = URL(string: "https://generativelanguage.googleapis.com/v1beta/models/\(model):streamGenerateContent?alt=sse&key=\(encodedKey)")
+        else {
+            throw SmartiiError.message("Invalid Gemini request URL.")
+        }
+
+        var parts: [[String: Any]] = [["text": prompt]]
+        if let image = image {
+            parts.append(["inline_data": ["mime_type": image.mime, "data": image.base64]])
+        }
+        let body: [String: Any] = [
+            "contents": [["role": "user", "parts": parts]]
+        ]
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+        request.httpBody = try serialize(body)
+
+        try await sseLines(request) { line in
+            guard let obj = sseData(from: line) else { return }
+            if let err = obj["error"] as? [String: Any], let msg = err["message"] as? String {
+                throw SmartiiError.message(msg)
+            }
+            guard let candidates = obj["candidates"] as? [[String: Any]],
+                  let first = candidates.first,
+                  let content = first["content"] as? [String: Any],
+                  let parts = content["parts"] as? [[String: Any]]
+            else { return }
+            let text = parts.compactMap { $0["text"] as? String }.joined()
+            if !text.isEmpty { onDelta(text) }
+        }
+    }
+
+    // MARK: - Anthropic streaming
+
+    private static func streamAnthropic(
+        apiKey: String, prompt: String, image: (mime: String, base64: String)?,
+        model: String, onDelta: @escaping @Sendable (String) -> Void
+    ) async throws {
+        guard let url = URL(string: "https://api.anthropic.com/v1/messages") else {
+            throw SmartiiError.message("Invalid Anthropic request URL.")
+        }
+
+        let content: [[String: Any]]
+        if let image = image {
+            content = [
+                ["type": "image", "source": ["type": "base64", "media_type": image.mime, "data": image.base64]],
+                ["type": "text", "text": prompt],
+            ]
+        } else {
+            content = [["type": "text", "text": prompt]]
+        }
+
+        let body: [String: Any] = [
+            "model": model,
+            "max_tokens": 2048,
+            "stream": true,
+            "messages": [["role": "user", "content": content]],
+        ]
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
+        request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
+        request.setValue("true", forHTTPHeaderField: "anthropic-dangerous-direct-browser-access")
+        request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+        request.httpBody = try serialize(body)
+
+        try await sseLines(request) { line in
+            guard let obj = sseData(from: line) else { return }
+            // Anthropic surfaces errors as an {"type":"error","error":{...}} event.
+            if let type = obj["type"] as? String, type == "error",
+               let err = obj["error"] as? [String: Any], let msg = err["message"] as? String {
+                throw SmartiiError.message(msg)
+            }
+            // We only care about content_block_delta → delta.text.
+            guard let type = obj["type"] as? String, type == "content_block_delta",
+                  let delta = obj["delta"] as? [String: Any],
+                  let text = delta["text"] as? String, !text.isEmpty
+            else { return }
+            onDelta(text)
         }
     }
 
