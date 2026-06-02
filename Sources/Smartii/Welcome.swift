@@ -35,6 +35,18 @@ final class WelcomeWindowController: NSObject {
     private var index = 0
     private var escMonitor: Any?
 
+    // Mascot: a fixed-size container we scale/float so layout never moves, plus a
+    // behind-robot violet glow circle we breathe independently.
+    private let mascotBox = NSView()
+    private let logoView = NSImageView()
+    private let glowOrb = CALayer()
+    private var heroElements: [NSView] = []
+
+    /// Skip looping/decorative animations when the user prefers reduced motion.
+    private var reduceMotion: Bool {
+        NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+    }
+
     private enum C {
         static let width: CGFloat = 460
         static let height: CGFloat = 540
@@ -221,22 +233,50 @@ final class WelcomeWindowController: NSObject {
 
     private func buildPages() {
         let p1 = makePage()
-        let logo = NSImageView()
-        logo.image = logoImage()
-        logo.imageScaling = .scaleProportionallyUpOrDown
-        logo.wantsLayer = true
-        logo.shadow = softGlow()
-        logo.translatesAutoresizingMaskIntoConstraints = false
-        logo.widthAnchor.constraint(equalToConstant: 88).isActive = true
-        logo.heightAnchor.constraint(equalToConstant: 88).isActive = true
+
+        // Fixed-size mascot container. Scaling/floating this box (not the image
+        // view) keeps the stack layout perfectly stable. It hosts a behind-robot
+        // violet glow orb plus the logo image view on top.
+        mascotBox.wantsLayer = true
+        mascotBox.translatesAutoresizingMaskIntoConstraints = false
+        mascotBox.widthAnchor.constraint(equalToConstant: 108).isActive = true
+        mascotBox.heightAnchor.constraint(equalToConstant: 108).isActive = true
+
+        // Soft radial violet orb that sits behind the robot and breathes.
+        glowOrb.backgroundColor = C.accent.cgColor
+        glowOrb.cornerRadius = 50
+        glowOrb.shadowColor = C.accent.cgColor
+        glowOrb.shadowOpacity = 1
+        glowOrb.shadowRadius = 26
+        glowOrb.shadowOffset = .zero
+        glowOrb.opacity = 0.42
+
+        logoView.image = logoImage()
+        logoView.imageScaling = .scaleProportionallyUpOrDown
+        logoView.wantsLayer = true
+        logoView.shadow = softGlow()
+        logoView.translatesAutoresizingMaskIntoConstraints = false
+        mascotBox.addSubview(logoView)
+        NSLayoutConstraint.activate([
+            logoView.centerXAnchor.constraint(equalTo: mascotBox.centerXAnchor),
+            logoView.centerYAnchor.constraint(equalTo: mascotBox.centerYAnchor),
+            logoView.widthAnchor.constraint(equalToConstant: 88),
+            logoView.heightAnchor.constraint(equalToConstant: 88),
+        ])
+
+        let title = label("Smartii", 30, .bold, C.text, align: .center)
+        let tagline = label("AI in your menu bar.", 16, .medium, C.accent, align: .center)
+        let blurb = label("Press a hotkey anywhere, screenshot your screen, and get the answer — without ever leaving the page you're on.",
+                          14, .regular, C.sub, align: .center)
+        heroElements = [mascotBox, title, tagline, blurb]
+
         let heroStack = vstack([
-            logo,
+            mascotBox,
             spacer(6),
-            label("Smartii", 30, .bold, C.text, align: .center),
-            label("AI in your menu bar.", 16, .medium, C.accent, align: .center),
+            title,
+            tagline,
             spacer(4),
-            label("Press a hotkey anywhere, screenshot your screen, and get the answer — without ever leaving the page you're on.",
-                  14, .regular, C.sub, align: .center),
+            blurb,
         ])
         heroStack.alignment = .centerX
         center(heroStack, in: p1)
@@ -307,6 +347,163 @@ final class WelcomeWindowController: NSObject {
         )
     }
 
+    // MARK: Mascot animation
+
+    /// Anchor a layer's transforms at its center WITHOUT shifting the view, by
+    /// compensating the position for the anchor-point change. Call once after the
+    /// layer has a non-zero size.
+    private func centerAnchor(_ layer: CALayer) {
+        guard layer.anchorPoint != CGPoint(x: 0.5, y: 0.5) else { return }
+        let b = layer.bounds
+        guard b.width > 0, b.height > 0 else { return }
+        let old = layer.anchorPoint
+        layer.anchorPoint = CGPoint(x: 0.5, y: 0.5)
+        layer.position = CGPoint(
+            x: layer.position.x + (0.5 - old.x) * b.width,
+            y: layer.position.y + (0.5 - old.y) * b.height
+        )
+    }
+
+    /// Lay out the behind-robot glow orb and (re)start the looping idle/breathing
+    /// /glow animations. Safe to call repeatedly; honours reduced-motion.
+    private func startMascotLife() {
+        // Position the glow orb centered behind the logo within the mascot box.
+        let actions: [String: CAAction] = ["bounds": NSNull(), "position": NSNull()]
+        glowOrb.actions = actions
+        let side: CGFloat = 100
+        glowOrb.bounds = CGRect(x: 0, y: 0, width: side, height: side)
+        glowOrb.cornerRadius = side / 2
+        glowOrb.position = CGPoint(x: mascotBox.bounds.midX, y: mascotBox.bounds.midY)
+        if glowOrb.superlayer == nil { mascotBox.layer?.insertSublayer(glowOrb, at: 0) }
+
+        guard let logoLayer = logoView.layer else { return }
+        centerAnchor(logoLayer)
+
+        // Remove any prior loops so a re-show doesn't stack them.
+        logoLayer.removeAnimation(forKey: "idleLife")
+        glowOrb.removeAnimation(forKey: "glowPulse")
+
+        guard !reduceMotion else { return }
+
+        // IDLE FLOAT + BREATHING, layered via a CAAnimationGroup on the logo
+        // layer. The group repeats forever; each child autoreverses over a whole
+        // number of cycles within the 12s span so the loop is seamless.
+        //   float:   2.4s × 5 cycles = 12s  (±5px bob)
+        //   breathe: 3.0s × 4 cycles = 12s  (1.0↔1.04 scale, centered anchor)
+        let span = 12.0
+
+        let float = CABasicAnimation(keyPath: "transform.translation.y")
+        float.fromValue = -5
+        float.toValue = 5
+        float.duration = 2.4
+        float.autoreverses = true
+        float.repeatCount = Float(span / 2.4)
+        float.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+
+        let breathe = CABasicAnimation(keyPath: "transform.scale")
+        breathe.fromValue = 1.0
+        breathe.toValue = 1.04
+        breathe.duration = 3.0
+        breathe.autoreverses = true
+        breathe.repeatCount = Float(span / 3.0)
+        breathe.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+
+        let group = CAAnimationGroup()
+        group.animations = [float, breathe]
+        group.duration = span
+        group.repeatCount = .infinity
+        group.isRemovedOnCompletion = false
+        logoLayer.add(group, forKey: "idleLife")
+
+        // GLOW PULSE: the violet orb softly breathes opacity, slightly out of
+        // phase with the breathing for an organic feel.
+        let glowPulse = CABasicAnimation(keyPath: "opacity")
+        glowPulse.fromValue = 0.30
+        glowPulse.toValue = 0.60
+        glowPulse.duration = 2.7
+        glowPulse.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        glowPulse.autoreverses = true
+        glowPulse.repeatCount = .infinity
+        glowPulse.isRemovedOnCompletion = false
+        glowOrb.add(glowPulse, forKey: "glowPulse")
+    }
+
+    private func stopMascotLife() {
+        logoView.layer?.removeAnimation(forKey: "idleLife")
+        glowOrb.removeAnimation(forKey: "glowPulse")
+    }
+
+    /// ENTRANCE POP: spring-ish scale-in for the robot, layered over the idle
+    /// loop (the loop's transform.translation/scale and this keyframe coexist).
+    private func popMascotIn() {
+        guard let layer = logoView.layer else { return }
+        centerAnchor(layer)
+        guard !reduceMotion else { return }
+        let pop = CAKeyframeAnimation(keyPath: "transform.scale")
+        pop.values = [0.6, 1.06, 0.98, 1.0]
+        pop.keyTimes = [0, 0.6, 0.82, 1.0]
+        pop.duration = 0.5
+        pop.timingFunction = CAMediaTimingFunction(name: .easeOut)
+        layer.add(pop, forKey: "pop")
+
+        // The orb fades up with it.
+        let fade = CABasicAnimation(keyPath: "opacity")
+        fade.fromValue = 0
+        fade.toValue = 0.42
+        fade.duration = 0.5
+        fade.timingFunction = CAMediaTimingFunction(name: .easeOut)
+        glowOrb.add(fade, forKey: "orbFade")
+    }
+
+    /// LAST-PAGE WAVE: a friendly little tilt of the robot. Anchor at bottom so it
+    /// rocks like a head-nod, then snaps back; doesn't disturb the idle loop.
+    private func waveMascot() {
+        guard !reduceMotion, let layer = logoView.layer else { return }
+        let wave = CAKeyframeAnimation(keyPath: "transform.rotation.z")
+        wave.values = [0, 0.16, -0.12, 0.07, 0]
+        wave.keyTimes = [0, 0.25, 0.55, 0.8, 1.0]
+        wave.duration = 0.7
+        wave.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        layer.add(wave, forKey: "wave")
+    }
+
+    /// MICRO-INTERACTION: a quick pop on the active page dot.
+    private func bounceActiveDot() {
+        guard !reduceMotion, index < dots.count, let layer = dots[index].layer else { return }
+        centerAnchor(layer)
+        let bounce = CAKeyframeAnimation(keyPath: "transform.scale")
+        bounce.values = [1.0, 1.5, 0.9, 1.0]
+        bounce.keyTimes = [0, 0.4, 0.7, 1.0]
+        bounce.duration = 0.34
+        bounce.timingFunction = CAMediaTimingFunction(name: .easeOut)
+        layer.add(bounce, forKey: "dotBounce")
+    }
+
+    /// Fade + small rise stagger for a set of views, 40ms apart.
+    private func staggerIn(_ views: [NSView], rise: CGFloat = 10) {
+        guard !reduceMotion else {
+            for v in views { v.layer?.removeAnimation(forKey: "stagger") }
+            return
+        }
+        for (i, v) in views.enumerated() {
+            guard let layer = v.layer else { continue }
+            let begin = layer.convertTime(CACurrentMediaTime(), from: nil) + Double(i) * 0.04
+            let up = CABasicAnimation(keyPath: "transform.translation.y")
+            up.fromValue = rise
+            up.toValue = 0
+            let fade = CABasicAnimation(keyPath: "opacity")
+            fade.fromValue = 0
+            fade.toValue = 1
+            let group = CAAnimationGroup()
+            group.animations = [up, fade]
+            group.duration = 0.42
+            group.beginTime = begin
+            group.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            group.fillMode = .backwards
+            layer.add(group, forKey: "stagger")
+        }
+    }
+
     // MARK: Navigation
 
     private func showPage(_ i: Int, animated: Bool) {
@@ -327,12 +524,19 @@ final class WelcomeWindowController: NSObject {
 
         incoming.isHidden = false
         incoming.alphaValue = 0
-        let slide = CABasicAnimation(keyPath: "transform.translation.x")
-        slide.fromValue = forward ? 22 : -22
-        slide.toValue = 0
-        slide.duration = 0.28
-        slide.timingFunction = CAMediaTimingFunction(name: .easeOut)
-        incoming.layer?.add(slide, forKey: "slide")
+        if !reduceMotion {
+            let slide = CABasicAnimation(keyPath: "transform.translation.x")
+            slide.fromValue = forward ? 22 : -22
+            slide.toValue = 0
+            slide.duration = 0.28
+            slide.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            incoming.layer?.add(slide, forKey: "slide")
+        }
+
+        // Gentle per-element stagger as the page arrives.
+        staggerIn(pageElements(of: incoming))
+        // Friendly wave when the user lands on the final page.
+        if index == pages.count - 1 { waveMascot() }
 
         NSAnimationContext.runAnimationGroup({ ctx in
             ctx.duration = 0.26
@@ -342,6 +546,17 @@ final class WelcomeWindowController: NSObject {
         }, completionHandler: {
             outgoing?.isHidden = true
         })
+    }
+
+    /// The animatable child elements of a page, for stagger-in. For the hero page
+    /// we use the captured hero elements (mascot + texts); for list pages we walk
+    /// the top-level rows of the pinned stack.
+    private func pageElements(of page: NSView) -> [NSView] {
+        if page === pages.first { return heroElements }
+        if let stack = page.subviews.first as? NSStackView {
+            return stack.arrangedSubviews
+        }
+        return page.subviews
     }
 
     private func updateChrome() {
@@ -369,14 +584,19 @@ final class WelcomeWindowController: NSObject {
             onOpenSettings?()
         } else {
             showPage(index + 1, animated: true)
+            bounceActiveDot()
         }
     }
 
-    @objc private func backTapped() { showPage(index - 1, animated: true) }
+    @objc private func backTapped() {
+        showPage(index - 1, animated: true)
+        bounceActiveDot()
+    }
     @objc private func closeTapped() { finish() }
 
     private func finish() {
         Settings.shared.didOnboard = true
+        stopMascotLife()
         if let m = escMonitor { NSEvent.removeMonitor(m); escMonitor = nil }
         NSAnimationContext.runAnimationGroup({ ctx in
             ctx.duration = 0.20
@@ -401,13 +621,21 @@ final class WelcomeWindowController: NSObject {
         card.layoutSubtreeIfNeeded()
         layoutChrome()
 
-        // Rise the card up a touch as it fades in.
-        let rise = CABasicAnimation(keyPath: "transform.translation.y")
-        rise.fromValue = -16
-        rise.toValue = 0
-        rise.duration = 0.34
-        rise.timingFunction = CAMediaTimingFunction(name: .easeOut)
-        card.layer?.add(rise, forKey: "rise")
+        // Bring the mascot to life and stage its entrance.
+        startMascotLife()
+        popMascotIn()
+        // Stagger the hero text in just after the pop.
+        staggerIn(heroElements)
+
+        // Rise the card up a touch as it fades in (skip under reduced motion).
+        if !reduceMotion {
+            let rise = CABasicAnimation(keyPath: "transform.translation.y")
+            rise.fromValue = -16
+            rise.toValue = 0
+            rise.duration = 0.34
+            rise.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            card.layer?.add(rise, forKey: "rise")
+        }
 
         NSAnimationContext.runAnimationGroup { ctx in
             ctx.duration = 0.30

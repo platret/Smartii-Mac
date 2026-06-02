@@ -67,10 +67,10 @@ final class BarController: NSObject, NSTextFieldDelegate {
 
     // MARK: Layout constants
 
-    private let panelWidth: CGFloat = 640
+    private let panelWidth: CGFloat = 560
     private let edgeInset: CGFloat = 14          // input pill inset from panel edges
-    private let pillHeight: CGFloat = 44
-    private let collapsedHeight: CGFloat = 74    // input bar only
+    private let pillHeight: CGFloat = 46
+    private let collapsedHeight: CGFloat = 74    // input bar only (computed in applyState)
     private let topBarHeight: CGFloat = 26
     private let maxTranscriptHeight: CGFloat = 460
     private let maxPanelHeight: CGFloat = 560
@@ -107,6 +107,9 @@ final class BarController: NSObject, NSTextFieldDelegate {
 
     // Height constraint we animate to grow/shrink the transcript region.
     private var transcriptHeightConstraint: NSLayoutConstraint!
+    // Top-bar height — collapsed to 0 when there are no messages so the idle
+    // panel is just the input pill.
+    private var topBarHeightConstraint: NSLayoutConstraint!
 
     override init() {
         panel = FloatingPanel(
@@ -169,12 +172,13 @@ final class BarController: NSObject, NSTextFieldDelegate {
 
         topBar.addSubview(smartiiLabel)
         topBar.addSubview(topRight)
+        topBarHeightConstraint = topBar.heightAnchor.constraint(equalToConstant: topBarHeight)
         NSLayoutConstraint.activate([
             smartiiLabel.leadingAnchor.constraint(equalTo: topBar.leadingAnchor),
             smartiiLabel.centerYAnchor.constraint(equalTo: topBar.centerYAnchor),
             topRight.trailingAnchor.constraint(equalTo: topBar.trailingAnchor),
             topRight.centerYAnchor.constraint(equalTo: topBar.centerYAnchor),
-            topBar.heightAnchor.constraint(equalToConstant: topBarHeight)
+            topBarHeightConstraint
         ])
 
         // --- Transcript: flipped vertical stack inside a scroll view ---
@@ -208,7 +212,7 @@ final class BarController: NSObject, NSTextFieldDelegate {
         let cameraButton = makeIconButton(symbol: "camera.viewfinder", tint: Palette.secondary, action: #selector(cameraTapped))
         let boltButton = makeIconButton(symbol: "bolt.fill", tint: Palette.secondary, action: #selector(godmodeTapped))
 
-        inputField.placeholderString = "Message Smartii…"
+        inputField.placeholderString = "Ask anything…"
         inputField.font = .systemFont(ofSize: 15)
         inputField.textColor = Palette.text
         inputField.drawsBackground = false
@@ -362,10 +366,16 @@ final class BarController: NSObject, NSTextFieldDelegate {
     /// and dispatches the appropriate callback. Screenshot submissions are prefixed
     /// with a camera emoji to mirror what the model is being shown.
     private func submitFromField(includeScreenshot: Bool) {
-        let text = inputField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        // While the user is typing, `stringValue` still holds the LAST COMMITTED
+        // value — the in-progress text lives in the field editor. Reading
+        // stringValue here returned "" and silently dropped the message (the hang).
+        let raw = inputField.currentEditor()?.string ?? inputField.stringValue
+        let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
         let display = includeScreenshot ? "📸 \(text)" : text
         appendUserBubble(display)
+        // Clear both the live field editor and the value.
+        inputField.currentEditor()?.string = ""
         inputField.stringValue = ""
         hasPendingUser = true
         onSubmit?(text, includeScreenshot)
@@ -564,6 +574,9 @@ final class BarController: NSObject, NSTextFieldDelegate {
     private func applyState(animated: Bool) {
         topBar.isHidden = !isExpanded
         transcriptScroll.isHidden = !isExpanded
+        // Collapse the top bar's height too, so the idle panel is purely the pill
+        // (otherwise a hidden-but-26pt top bar leaves an empty gap above the input).
+        topBarHeightConstraint.constant = isExpanded ? topBarHeight : 0
 
         // Compute the target panel height.
         let targetHeight: CGFloat
@@ -572,13 +585,14 @@ final class BarController: NSObject, NSTextFieldDelegate {
             // Measure the content's natural height, capped at the maximum.
             transcriptStack.layoutSubtreeIfNeeded()
             let natural = transcriptStack.fittingSize.height
-            targetTranscript = min(max(natural, 80), maxTranscriptHeight)
+            targetTranscript = min(max(natural, 60), maxTranscriptHeight)
             // chrome = top inset + topBar + gap + gap + pill + bottom inset
             let chrome = edgeInset + topBarHeight + 6 + 6 + pillHeight + edgeInset
             targetHeight = min(targetTranscript + chrome, maxPanelHeight)
         } else {
             targetTranscript = 0
-            targetHeight = collapsedHeight
+            // Collapsed: top inset + (no top bar) + gap + gap + pill + bottom inset.
+            targetHeight = edgeInset + 6 + 6 + pillHeight + edgeInset
         }
 
         transcriptHeightConstraint.constant = targetTranscript

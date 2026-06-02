@@ -47,6 +47,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if !Settings.shared.didOnboard {
             welcomeController.show()
         }
+
+        // Quietly check for a newer release shortly after launch.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+            Updater.shared.checkInBackground()
+        }
     }
 
     // MARK: - Status item & menu
@@ -78,6 +83,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                   action: #selector(menuSettings), keyEquivalent: "")
         settings.target = self
         menu.addItem(settings)
+
+        let checkUpdates = NSMenuItem(title: "Check for Updates…",
+                                      action: #selector(menuCheckForUpdates), keyEquivalent: "")
+        checkUpdates.target = self
+        menu.addItem(checkUpdates)
 
         let welcome = NSMenuItem(title: "Welcome / Help",
                                  action: #selector(menuWelcome), keyEquivalent: "")
@@ -204,6 +214,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func menuSolveScreen() { solveScreen() }
     @objc private func menuGodmode() { godmode() }
     @objc private func menuSettings() { settingsController.show() }
+    @objc private func menuCheckForUpdates() { Updater.shared.checkAndPrompt() }
     @objc private func menuWelcome() { welcomeController.show() }
     @objc private func menuQuit() { NSApp.terminate(nil) }
 

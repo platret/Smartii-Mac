@@ -21,12 +21,17 @@ jobs:
       - name: Build app bundle
         run: bash Scripts/make-app.sh release
 
-      - name: Zip app bundle
+      - name: Build .dmg installer
+        run: bash Scripts/make-dmg.sh
+
+      - name: Zip app bundle (used by the in-app updater)
         run: ditto -c -k --keepParent build/Smartii.app build/Smartii-mac.zip
 
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
         with:
-          files: build/Smartii-mac.zip
+          files: |
+            build/Smartii.dmg
+            build/Smartii-mac.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

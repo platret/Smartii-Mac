@@ -52,10 +52,14 @@ All shortcuts are **global**: they fire from inside whatever app is frontmost.
 
 ## Install (prebuilt)
 
-1. **Download** the `.zip` from [GitHub Releases](https://github.com/platret/Smartii-Mac/releases/latest) and unzip it.
-2. **Move** `Smartii.app` into `/Applications`.
-3. **Right-click → Open** the first time. The app is unsigned, so macOS asks you to confirm — click **Open**. (See [Permissions](#permissions) if Gatekeeper blocks it outright.)
+1. **Download `Smartii.dmg`** from [GitHub Releases](https://github.com/platret/Smartii-Mac/releases/latest) and open it.
+2. **Drag `Smartii` into the `Applications` folder** in the window that appears.
+3. **Right-click `Smartii.app` in `/Applications` → Open** the first time. The app is unsigned, so macOS asks you to confirm — click **Open**. (See [Permissions](#permissions) if Gatekeeper blocks it outright.)
 4. **Grant Screen Recording** permission when prompted, then pick a provider and paste your API key from the menu-bar Settings.
+
+After that first launch, **Smartii keeps itself up to date** — it checks GitHub Releases and downloads new versions automatically, so you only have to do this once.
+
+> **Prefer a zip?** A `Smartii-mac.zip` is attached to every release as an alternative. Unzip it, move `Smartii.app` into `/Applications`, then right-click → Open the first time (same as step 3). This is the same archive the in-app updater uses.
 
 ## Build from source
 
