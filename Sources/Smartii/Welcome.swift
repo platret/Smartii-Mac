@@ -35,6 +35,13 @@ final class WelcomeWindowController: NSObject {
     private var index = 0
     private var escMonitor: Any?
 
+    // Inline API-key entry on the final setup page.
+    private let keyField = NSSecureTextField()
+    private let testButton = NSButton()
+    private let testStatus = NSTextField(labelWithString: "")
+    /// Guards against overlapping test requests.
+    private var isTesting = false
+
     // Mascot: a fixed-size container we scale/float so layout never moves, plus a
     // behind-robot violet glow circle we breathe independently.
     private let mascotBox = NSView()
@@ -58,6 +65,8 @@ final class WelcomeWindowController: NSObject {
         static let chip   = NSColor(white: 1, alpha: 0.07)
         static let border = NSColor(white: 1, alpha: 0.12)
         static let dotOff = NSColor(white: 1, alpha: 0.22)
+        static let ok     = NSColor(srgbRed: 0x4c / 255, green: 0xd9 / 255, blue: 0x64 / 255, alpha: 1)
+        static let bad    = NSColor(srgbRed: 0xff / 255, green: 0x6b / 255, blue: 0x6b / 255, alpha: 1)
     }
 
     // MARK: Init
@@ -297,12 +306,12 @@ final class WelcomeWindowController: NSObject {
         let p3 = makePage()
         let s3 = vstack([
             label("Set up in 3 steps.", 22, .bold, C.text),
-            spacer(6),
-            stepRow(1, "Pick a provider — Gemini and Groq have generous free tiers."),
-            stepRow(2, "Paste your API key. It's stored safely in your macOS Keychain."),
-            stepRow(3, "Press ⌥⇧G on any screen. macOS will ask for Screen Recording permission the first time — allow it."),
+            spacer(4),
+            stepRow(1, "Pick a provider — Gemini is free, fast, and reads screenshots."),
+            stepRow(2, "Paste your API key below. It's stored safely in your macOS Keychain."),
+            stepRow(3, "Press ⌥⇧G on any screen. macOS asks for Screen Recording the first time — allow it."),
             spacer(8),
-            label("Tip: answers are copied to your clipboard automatically.", 12.5, .regular, C.sub),
+            keyEntryBlock(),
         ])
         s3.alignment = .leading
         pinTop(s3, in: p3)
@@ -467,6 +476,44 @@ final class WelcomeWindowController: NSObject {
         layer.add(wave, forKey: "wave")
     }
 
+    /// HAPPY BOUNCE: a delighted little hop + squash-and-stretch when the API
+    /// key tests OK. Layered over the idle float/breathe loop (translation.y and
+    /// scale keyframes coexist with the group's transforms), plus a quick bright
+    /// flash of the violet glow orb. Honours reduced-motion.
+    private func bounceMascot() {
+        guard let layer = logoView.layer else { return }
+        centerAnchor(layer)
+        guard !reduceMotion else { return }
+
+        // Two cheerful hops upward.
+        let hop = CAKeyframeAnimation(keyPath: "transform.translation.y")
+        hop.values = [0, 18, 0, 10, 0]
+        hop.keyTimes = [0, 0.28, 0.5, 0.74, 1.0]
+        hop.duration = 0.72
+        hop.timingFunction = CAMediaTimingFunction(name: .easeOut)
+
+        // Anticipation squash-and-stretch synced to the hops.
+        let squash = CAKeyframeAnimation(keyPath: "transform.scale")
+        squash.values = [1.0, 1.12, 0.95, 1.06, 1.0]
+        squash.keyTimes = [0, 0.28, 0.5, 0.74, 1.0]
+        squash.duration = 0.72
+        squash.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+
+        let group = CAAnimationGroup()
+        group.animations = [hop, squash]
+        group.duration = 0.72
+        layer.add(group, forKey: "happyBounce")
+
+        // Bright, brief glow flash to celebrate, then settle back to idle level.
+        let flash = CABasicAnimation(keyPath: "opacity")
+        flash.fromValue = glowOrb.presentation()?.opacity ?? 0.42
+        flash.toValue = 0.9
+        flash.duration = 0.18
+        flash.autoreverses = true
+        flash.timingFunction = CAMediaTimingFunction(name: .easeOut)
+        glowOrb.add(flash, forKey: "happyFlash")
+    }
+
     /// MICRO-INTERACTION: a quick pop on the active page dot.
     private func bounceActiveDot() {
         guard !reduceMotion, index < dots.count, let layer = dots[index].layer else { return }
@@ -594,6 +641,59 @@ final class WelcomeWindowController: NSObject {
     }
     @objc private func closeTapped() { finish() }
 
+    /// Save the typed key for the current provider and ping it. On success the
+    /// robot does a happy bounce and the status shows a green ✓; on failure the
+    /// status shows a red ✗ with the provider's error text.
+    @objc private func testKeyTapped() {
+        guard !isTesting else { return }
+        let key = keyField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !key.isEmpty else {
+            setTestStatus("Paste an API key first.", color: C.sub)
+            return
+        }
+
+        let providerId = Settings.shared.providerId
+        // Persist immediately so "Set up API key →" / first use already has it.
+        Settings.shared.setAPIKey(key, for: providerId)
+        let model = Settings.shared.model
+
+        isTesting = true
+        setTestStatus("Testing…", color: C.sub)
+        testButton.isEnabled = false
+
+        Task { [weak self] in
+            do {
+                _ = try await Providers.call(
+                    providerId: providerId,
+                    apiKey: key,
+                    prompt: "Reply with OK",
+                    imageDataURL: nil,
+                    model: model.isEmpty ? nil : model
+                )
+                await MainActor.run {
+                    guard let self else { return }
+                    self.isTesting = false
+                    self.testButton.isEnabled = true
+                    self.setTestStatus("✓  Key works — you're all set.", color: C.ok)
+                    self.bounceMascot()
+                }
+            } catch {
+                let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                await MainActor.run {
+                    guard let self else { return }
+                    self.isTesting = false
+                    self.testButton.isEnabled = true
+                    self.setTestStatus("✗  \(message)", color: C.bad)
+                }
+            }
+        }
+    }
+
+    private func setTestStatus(_ text: String, color: NSColor) {
+        testStatus.stringValue = text
+        testStatus.textColor = color
+    }
+
     private func finish() {
         Settings.shared.didOnboard = true
         stopMascotLife()
@@ -611,6 +711,19 @@ final class WelcomeWindowController: NSObject {
     // MARK: Public API
 
     func show() {
+        // Recommend & preselect Gemini for a fresh user (no key saved yet).
+        if Settings.shared.apiKey(for: "gemini")?.isEmpty != false,
+           Settings.shared.providerId == "gemini" || Settings.shared.providerId.isEmpty {
+            Settings.shared.providerId = "gemini"
+        }
+        // Reflect any previously-saved key for the current provider in the field,
+        // and clear stale status.
+        keyField.stringValue = Settings.shared.apiKey(for: Settings.shared.providerId) ?? ""
+        testStatus.stringValue = " "
+        testStatus.textColor = C.sub
+        isTesting = false
+        testButton.isEnabled = true
+
         // Reset to the first page each time it's opened.
         showPage(0, animated: false)
         window.center()
@@ -750,6 +863,82 @@ final class WelcomeWindowController: NSObject {
         row.alignment = .top
         row.spacing = 12
         return row
+    }
+
+    /// The inline API-key entry shown on the final setup page: a recommendation
+    /// note for Gemini, a secure key field with a "Test" button on the same row,
+    /// and an inline ✓/✗ status line that fills in after a test ping.
+    private func keyEntryBlock() -> NSView {
+        // Recommendation badge for the (preselected) Gemini provider.
+        let recDot = NSView()
+        recDot.wantsLayer = true
+        recDot.layer?.backgroundColor = C.ok.cgColor
+        recDot.layer?.cornerRadius = 4
+        recDot.translatesAutoresizingMaskIntoConstraints = false
+        recDot.widthAnchor.constraint(equalToConstant: 8).isActive = true
+        recDot.heightAnchor.constraint(equalToConstant: 8).isActive = true
+        let rec = label("Gemini — free & fast, recommended", 12.5, .semibold, C.ok)
+        let recRow = NSStackView(views: [recDot, rec])
+        recRow.orientation = .horizontal
+        recRow.alignment = .centerY
+        recRow.spacing = 8
+
+        // Secure key field.
+        keyField.placeholderString = "Paste your Gemini API key"
+        keyField.font = .systemFont(ofSize: 13)
+        keyField.textColor = C.text
+        keyField.focusRingType = .none
+        keyField.bezelStyle = .roundedBezel
+        keyField.isBezeled = true
+        keyField.drawsBackground = true
+        keyField.backgroundColor = C.chip
+        keyField.wantsLayer = true
+        keyField.layer?.cornerRadius = 8
+        keyField.target = self
+        keyField.action = #selector(testKeyTapped)   // Enter = test
+        keyField.translatesAutoresizingMaskIntoConstraints = false
+        keyField.heightAnchor.constraint(equalToConstant: 32).isActive = true
+        keyField.setContentHuggingPriority(.defaultLow, for: .horizontal)
+
+        // Test button (filled accent, compact).
+        testButton.isBordered = false
+        testButton.bezelStyle = .regularSquare
+        testButton.wantsLayer = true
+        testButton.layer?.cornerRadius = 8
+        testButton.layer?.backgroundColor = C.accent.cgColor
+        testButton.target = self
+        testButton.action = #selector(testKeyTapped)
+        testButton.attributedTitle = NSAttributedString(
+            string: "Test",
+            attributes: [
+                .foregroundColor: NSColor.white,
+                .font: NSFont.systemFont(ofSize: 13, weight: .semibold),
+            ]
+        )
+        testButton.translatesAutoresizingMaskIntoConstraints = false
+        testButton.widthAnchor.constraint(equalToConstant: 64).isActive = true
+        testButton.heightAnchor.constraint(equalToConstant: 32).isActive = true
+
+        let fieldRow = NSStackView(views: [keyField, testButton])
+        fieldRow.orientation = .horizontal
+        fieldRow.alignment = .centerY
+        fieldRow.spacing = 8
+        fieldRow.distribution = .fill
+
+        // Inline status line (hidden until a test runs).
+        testStatus.font = .systemFont(ofSize: 12.5, weight: .medium)
+        testStatus.textColor = C.sub
+        testStatus.lineBreakMode = .byTruncatingTail
+        testStatus.maximumNumberOfLines = 2
+        testStatus.stringValue = " "
+        testStatus.translatesAutoresizingMaskIntoConstraints = false
+
+        let block = vstack([recRow, spacer(2), fieldRow, testStatus])
+        block.alignment = .leading
+        // The field row must stretch to the page width so "Test" sits at the edge.
+        fieldRow.widthAnchor.constraint(equalTo: block.widthAnchor).isActive = true
+        testStatus.widthAnchor.constraint(equalTo: block.widthAnchor).isActive = true
+        return block
     }
 
     private func vstack(_ views: [NSView]) -> NSStackView {
