@@ -1,0 +1,15 @@
+# Swift Package Manager build output
+.build/
+build/
+
+# SwiftPM local state
+.swiftpm/
+Package.resolved
+
+# Xcode project user data
+*.xcodeproj/xcuserdata/
+*.xcodeproj/project.xcworkspace/xcuserdata/
+*.xcworkspace/xcuserdata/
+
+# macOS
+.DS_Store
