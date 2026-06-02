@@ -53,8 +53,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func setUpStatusItem() {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        item.button?.image = NSImage(systemSymbolName: "sparkles",
-                                     accessibilityDescription: "Smartii")
+        item.button?.image = AppDelegate.makeMenuBarIcon()
 
         let menu = NSMenu()
 
@@ -94,6 +93,63 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         item.menu = menu
         statusItem = item
+    }
+
+    /// Builds the Smartii robot menu-bar glyph as a template image.
+    ///
+    /// The art is a simplified vector of the Smartii mascot: a rounded-square head
+    /// with two punched-out round eyes and a short antenna ending in a small bulb.
+    /// Everything is drawn in pure black; marking the image as a template lets the
+    /// system recolor it (white on the typical dark menu bar, dark when highlighted).
+    private static func makeMenuBarIcon() -> NSImage {
+        let size = NSSize(width: 18, height: 18)
+        let image = NSImage(size: size, flipped: false) { _ in
+            // ----- Head: a rounded square, roughly centered, ~13×12. -----
+            let headRect = NSRect(x: 2.5, y: 2.5, width: 13.0, height: 11.5)
+            let head = NSBezierPath(roundedRect: headRect, xRadius: 3.2, yRadius: 3.2)
+
+            // Two round eyes, punched out of the head via even-odd winding.
+            let eyeRadius: CGFloat = 1.7
+            let eyeY = headRect.midY - 0.3
+            let leftEyeCenter = NSPoint(x: headRect.midX - 2.9, y: eyeY)
+            let rightEyeCenter = NSPoint(x: headRect.midX + 2.9, y: eyeY)
+            for center in [leftEyeCenter, rightEyeCenter] {
+                let eyeRect = NSRect(x: center.x - eyeRadius,
+                                     y: center.y - eyeRadius,
+                                     width: eyeRadius * 2,
+                                     height: eyeRadius * 2)
+                head.appendOval(in: eyeRect)
+            }
+            head.windingRule = .evenOdd
+            NSColor.black.setFill()
+            head.fill()
+
+            // ----- Antenna: a thin stalk rising ~2.5px from the top center… -----
+            let antenna = NSBezierPath()
+            let stalkBottom = NSPoint(x: headRect.midX, y: headRect.maxY)
+            let stalkTop = NSPoint(x: headRect.midX, y: headRect.maxY + 2.0)
+            antenna.move(to: stalkBottom)
+            antenna.line(to: stalkTop)
+            antenna.lineWidth = 1.2
+            antenna.lineCapStyle = .round
+            NSColor.black.setStroke()
+            antenna.stroke()
+
+            // …topped by a small filled bulb.
+            let bulbRadius: CGFloat = 1.5
+            let bulbRect = NSRect(x: stalkTop.x - bulbRadius,
+                                  y: stalkTop.y,
+                                  width: bulbRadius * 2,
+                                  height: bulbRadius * 2)
+            let bulb = NSBezierPath(ovalIn: bulbRect)
+            NSColor.black.setFill()
+            bulb.fill()
+
+            return true
+        }
+        image.isTemplate = true
+        image.accessibilityDescription = "Smartii"
+        return image
     }
 
     // MARK: - BarController wiring

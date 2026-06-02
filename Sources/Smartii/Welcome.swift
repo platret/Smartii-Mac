@@ -22,6 +22,10 @@ final class WelcomeWindowController: NSObject {
 
     private let window: WelcomeWindow
     private let card = NSVisualEffectView()
+    /// Clips the glow gradient to the rounded card shape and carries the border.
+    private let chrome = NSView()
+    private let glow = CAGradientLayer()
+    private let borderLayer = CAShapeLayer()
     private let pageContainer = NSView()
     private var pages: [NSView] = []
     private var dots: [NSView] = []
@@ -34,6 +38,7 @@ final class WelcomeWindowController: NSObject {
     private enum C {
         static let width: CGFloat = 460
         static let height: CGFloat = 540
+        static let corner: CGFloat = 20
         static let accent = NSColor(srgbRed: 0x7c / 255, green: 0x5c / 255, blue: 0xff / 255, alpha: 1)
         static let pink   = NSColor(srgbRed: 0xff / 255, green: 0x5e / 255, blue: 0x9c / 255, alpha: 1)
         static let text   = NSColor(white: 0.97, alpha: 1)
@@ -73,24 +78,49 @@ final class WelcomeWindowController: NSObject {
         card.blendingMode = .behindWindow
         card.state = .active
         card.wantsLayer = true
-        card.layer?.cornerRadius = 20
-        card.layer?.masksToBounds = true
-        card.layer?.borderWidth = 1
-        card.layer?.borderColor = C.border.cgColor
+        // Clip the behind-window blur with a resizable rounded-rect MASK image
+        // instead of layer.cornerRadius + masksToBounds. Rounding an
+        // NSVisualEffectView via the layer leaves hard/transparency artifacts on
+        // the edges (notably the right); a mask image clips it cleanly on all
+        // four sides.
+        card.maskImage = roundedMask(cornerRadius: C.corner)
         window.contentView = card
 
-        // Violet glow across the top of the card.
-        let glow = CAGradientLayer()
-        glow.frame = CGRect(x: 0, y: 0, width: C.width, height: C.height)
-        glow.colors = [
-            C.accent.withAlphaComponent(0.30).cgColor,
-            C.pink.withAlphaComponent(0.08).cgColor,
-            NSColor.clear.cgColor,
-        ]
-        glow.locations = [0.0, 0.25, 0.55]
-        glow.startPoint = CGPoint(x: 0.5, y: 1.0) // top
-        glow.endPoint = CGPoint(x: 0.5, y: 0.0)   // bottom
-        card.layer?.insertSublayer(glow, at: 0)
+        // Chrome overlay: hosts the glow + border so both are clipped to the same
+        // rounded shape as the card and can never paint a square corner.
+        chrome.wantsLayer = true
+        chrome.translatesAutoresizingMaskIntoConstraints = false
+        card.addSubview(chrome)
+        NSLayoutConstraint.activate([
+            chrome.topAnchor.constraint(equalTo: card.topAnchor),
+            chrome.leadingAnchor.constraint(equalTo: card.leadingAnchor),
+            chrome.trailingAnchor.constraint(equalTo: card.trailingAnchor),
+            chrome.bottomAnchor.constraint(equalTo: card.bottomAnchor),
+        ])
+        if let host = chrome.layer {
+            // Clip the glow to the rounded bounds so it follows the corners.
+            host.cornerRadius = C.corner
+            host.masksToBounds = true
+
+            // Violet glow across the top of the card, clipped to the rounded shape.
+            glow.colors = [
+                C.accent.withAlphaComponent(0.30).cgColor,
+                C.pink.withAlphaComponent(0.08).cgColor,
+                NSColor.clear.cgColor,
+            ]
+            glow.locations = [0.0, 0.25, 0.55]
+            glow.startPoint = CGPoint(x: 0.5, y: 1.0) // top
+            glow.endPoint = CGPoint(x: 0.5, y: 0.0)   // bottom
+            host.addSublayer(glow)
+
+            // 1px hairline border, drawn as a rounded stroke inset by 0.5px so it
+            // is crisp and uniform on every edge (a layer border under masking can
+            // clip unevenly at the corners).
+            borderLayer.fillColor = NSColor.clear.cgColor
+            borderLayer.strokeColor = C.border.cgColor
+            borderLayer.lineWidth = 1
+            host.addSublayer(borderLayer)
+        }
 
         // Close button (top-right).
         let close = NSButton(title: "✕", target: self, action: #selector(closeTapped))
@@ -109,6 +139,22 @@ final class WelcomeWindowController: NSObject {
 
         pageContainer.translatesAutoresizingMaskIntoConstraints = false
         card.addSubview(pageContainer)
+    }
+
+    /// A resizable rounded-rect mask image whose stretchable center keeps the
+    /// corners pixel-perfect at any size. Used as the visual-effect view's
+    /// `maskImage` to clip the behind-window blur to a clean rounded shape.
+    private func roundedMask(cornerRadius r: CGFloat) -> NSImage {
+        let edge = r * 2 + 1
+        let size = NSSize(width: edge, height: edge)
+        let image = NSImage(size: size, flipped: false) { rect in
+            NSColor.black.setFill()
+            NSBezierPath(roundedRect: rect, xRadius: r, yRadius: r).fill()
+            return true
+        }
+        image.capInsets = NSEdgeInsets(top: r, left: r, bottom: r, right: r)
+        image.resizingMode = .stretch
+        return image
     }
 
     private func buildBottomBar() {
@@ -242,6 +288,25 @@ final class WelcomeWindowController: NSObject {
         return v
     }
 
+    // MARK: Layout
+
+    /// Keep the manually-framed glow + border layers in sync with the card size.
+    private func layoutChrome() {
+        let bounds = chrome.bounds
+        let actions = ["bounds": NSNull(), "position": NSNull(), "path": NSNull()]
+        glow.actions = actions
+        borderLayer.actions = actions
+        glow.frame = bounds
+        borderLayer.frame = bounds
+        let inset = bounds.insetBy(dx: 0.5, dy: 0.5)
+        borderLayer.path = CGPath(
+            roundedRect: inset,
+            cornerWidth: C.corner - 0.5,
+            cornerHeight: C.corner - 0.5,
+            transform: nil
+        )
+    }
+
     // MARK: Navigation
 
     private func showPage(_ i: Int, animated: Bool) {
@@ -332,6 +397,9 @@ final class WelcomeWindowController: NSObject {
         window.alphaValue = 0
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
+        // Lay out the manually-framed glow + border now that the card has size.
+        card.layoutSubtreeIfNeeded()
+        layoutChrome()
 
         // Rise the card up a touch as it fades in.
         let rise = CABasicAnimation(keyPath: "transform.translation.y")
