@@ -4,10 +4,13 @@ import Carbon.HIToolbox
 // AppDelegate — the glue of Smartii for Mac.
 //
 // Owns the menu-bar status item, the floating answer panel (BarController) and the
-// settings window. Registers four global hotkeys and routes both the hotkeys and the
-// menu items into the same handful of async flows that talk to the AI providers.
+// settings / history windows. Registers four user-rebindable global hotkeys and
+// routes both the hotkeys and the menu items into the same handful of async flows
+// that talk to the AI providers — now via STREAMING (Providers.stream) with a
+// cancellable Task, conversation memory, history/streak/sound side effects, and an
+// optional Godmode autofill into the focused field.
 //
-// Hotkey bindings (see contract):
+// Default hotkey bindings (rebindable in Settings — see Settings.hotKey(for:)):
 //   ⌘⇧S  toggle / ask        ⌥⇧S  solve screen
 //   ⌥⇧G  godmode             ⌥⇧X  panic (hide panel)
 @MainActor
@@ -28,10 +31,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     question or task shown. Be direct and complete.
     """
 
+    /// Notification posted by Settings when the user rebinds any hotkey.
+    private static let hotKeysChanged = Notification.Name("SmartiiHotKeysChanged")
+
     private var statusItem: NSStatusItem?
     private let bar = BarController()
     private let settingsController = SettingsWindowController()
     private let welcomeController = WelcomeWindowController()
+    private let historyController = HistoryWindowController()
+
+    // MARK: - Conversation memory
+
+    /// One turn of the running conversation. `role` is "user" or "assistant".
+    private struct Turn { let role: String; let text: String }
+
+    /// Mutable per-stream UI state. MainActor-isolated so it can be mutated from
+    /// the `Task { @MainActor }` hops inside the `@Sendable` onDelta closure
+    /// without crossing an isolation boundary with a mutable local.
+    @MainActor
+    private final class StreamState {
+        var started = false
+        var accumulated = ""
+    }
+
+    /// Prior turns, included in the prompt when Settings.sendContext is on.
+    /// Cleared whenever the user starts a new chat (bar.onNewChat).
+    private var memory: [Turn] = []
+
+    // MARK: - Streaming state
+
+    /// The in-flight streaming task, retained so Stop / a new request can cancel it.
+    private var streamTask: Task<Void, Never>?
+
+    /// The menu item that shows today's solve count; refreshed when the menu opens.
+    private weak var solvedTodayItem: NSMenuItem?
+
+    /// Generation counter for hotkey registrations. Carbon's HotKeyManager can
+    /// only `register` (there is no unregister in its public API), so on rebind
+    /// we register a fresh set and bump this counter; handlers from earlier
+    /// generations become no-ops, so only the latest bindings fire.
+    private var hotKeyGeneration = 0
 
     // MARK: - Lifecycle
 
@@ -39,6 +78,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         setUpStatusItem()
         wireBarController()
         registerHotKeys()
+
+        // Re-register hotkeys whenever the user rebinds them in Settings.
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(hotKeysChangedNotification),
+            name: AppDelegate.hotKeysChanged,
+            object: nil
+        )
 
         // First launch: show the welcome / onboarding window once.
         welcomeController.onOpenSettings = { [weak self] in
@@ -61,6 +108,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         item.button?.image = AppDelegate.makeMenuBarIcon()
 
         let menu = NSMenu()
+        menu.delegate = self
 
         let ask = NSMenuItem(title: "Ask Smartii  ⌘⇧S",
                              action: #selector(menuAsk), keyEquivalent: "")
@@ -72,10 +120,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         solve.target = self
         menu.addItem(solve)
 
+        let region = NSMenuItem(title: "Solve region…",
+                                action: #selector(menuSolveRegion), keyEquivalent: "")
+        region.target = self
+        menu.addItem(region)
+
         let godmodeItem = NSMenuItem(title: "⚡ Godmode  ⌥⇧G",
                                      action: #selector(menuGodmode), keyEquivalent: "")
         godmodeItem.target = self
         menu.addItem(godmodeItem)
+
+        menu.addItem(.separator())
+
+        // Disabled info row showing how many problems were solved today.
+        let solvedToday = NSMenuItem(title: "Solved today: 0", action: nil, keyEquivalent: "")
+        solvedToday.isEnabled = false
+        menu.addItem(solvedToday)
+        solvedTodayItem = solvedToday
+
+        let history = NSMenuItem(title: "History…",
+                                 action: #selector(menuHistory), keyEquivalent: "")
+        history.target = self
+        menu.addItem(history)
 
         menu.addItem(.separator())
 
@@ -167,6 +233,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func wireBarController() {
         // The panel hands us the typed text and whether it was a Solve (screenshot) submit.
         bar.onSubmit = { [weak self] text, includeScreenshot in
+            Sound.send()
             self?.solve(text: text, includeScreenshot: includeScreenshot)
         }
         bar.onGodmode = { [weak self] in
@@ -175,35 +242,58 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         bar.onOpenSettings = { [weak self] in
             self?.settingsController.show()
         }
+        // User tapped Stop while a response was streaming — cancel the in-flight task.
+        bar.onStop = { [weak self] in
+            self?.cancelStream()
+        }
+        // User cleared the chat — drop the conversation memory.
+        bar.onNewChat = { [weak self] in
+            self?.cancelStream()
+            self?.memory.removeAll()
+        }
+        // User chose region capture from the panel.
+        bar.onRegionSolve = { [weak self] in
+            self?.solveRegion()
+        }
     }
 
     // MARK: - Global hotkeys
 
+    /// (Re)register the four global hotkeys from the user's saved bindings.
+    ///
+    /// Safe to call repeatedly. Since HotKeyManager only exposes `register`, each
+    /// call bumps `hotKeyGeneration` and the freshly registered handlers capture
+    /// that value; handlers from a prior generation short-circuit, so only the
+    /// most recent bindings act.
     private func registerHotKeys() {
-        // Carbon kVK_ANSI_* codes: S = 1, G = 5, X = 7.
-        let s: UInt32 = 1
-        let g: UInt32 = 5
-        let x: UInt32 = 7
+        hotKeyGeneration += 1
+        let generation = hotKeyGeneration
+        let settings = Settings.shared
 
-        let cmdShift = UInt32(cmdKey) | UInt32(shiftKey)
-        let optShift = UInt32(optionKey) | UInt32(shiftKey)
+        /// Register one action's hotkey with a generation guard around `body`.
+        func bind(_ action: HotKeyAction, _ body: @escaping () -> Void) {
+            let combo = settings.hotKey(for: action)
+            HotKeyManager.shared.register(keyCode: combo.keyCode, modifiers: combo.modifiers) { [weak self] in
+                guard let self, self.hotKeyGeneration == generation else { return }
+                body()
+            }
+        }
 
-        // ⌘⇧S — toggle the ask panel.
-        HotKeyManager.shared.register(keyCode: s, modifiers: cmdShift) { [weak self] in
-            self?.toggleBar()
-        }
-        // ⌥⇧S — capture the screen and solve it.
-        HotKeyManager.shared.register(keyCode: s, modifiers: optShift) { [weak self] in
-            self?.solveScreen()
-        }
-        // ⌥⇧G — godmode: capture + answer everything on screen.
-        HotKeyManager.shared.register(keyCode: g, modifiers: optShift) { [weak self] in
-            self?.godmode()
-        }
-        // ⌥⇧X — panic: hide the panel instantly.
-        HotKeyManager.shared.register(keyCode: x, modifiers: optShift) { [weak self] in
+        // ask — toggle the ask panel.
+        bind(.ask) { [weak self] in self?.toggleBar() }
+        // solve — capture the screen and solve it.
+        bind(.solve) { [weak self] in self?.solveScreen() }
+        // godmode — capture + answer everything on screen.
+        bind(.godmode) { [weak self] in self?.godmode() }
+        // panic — cancel any stream and hide the panel instantly.
+        bind(.panic) { [weak self] in
+            self?.cancelStream()
             self?.bar.hidePanel()
         }
+    }
+
+    @objc private func hotKeysChangedNotification() {
+        registerHotKeys()
     }
 
     // MARK: - Menu actions
@@ -212,7 +302,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func menuAsk() { toggleBar() }
     @objc private func menuSolveScreen() { solveScreen() }
+    @objc private func menuSolveRegion() { solveRegion() }
     @objc private func menuGodmode() { godmode() }
+    @objc private func menuHistory() { historyController.show() }
     @objc private func menuSettings() { settingsController.show() }
     @objc private func menuCheckForUpdates() { Updater.shared.checkAndPrompt() }
     @objc private func menuWelcome() { welcomeController.show() }
@@ -225,29 +317,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         bar.toggle()
     }
 
-    /// Capture the screen and solve it with no typed prompt.
+    /// Capture the whole screen and solve it with no typed prompt.
     func solveScreen() {
         solve(text: "", includeScreenshot: true)
     }
 
-    /// Godmode — screenshot the screen and run the verbatim GODMODE prompt.
-    func godmode() {
-        solve(text: AppDelegate.godmodePrompt, includeScreenshot: true)
+    /// Capture a user-selected region of the screen and solve it.
+    func solveRegion() {
+        Task { @MainActor in
+            // Hide the panel so it isn't part of the region selection, give the
+            // window server a beat, then show the drag-to-select overlay.
+            bar.hidePanel()
+            try? await Task.sleep(nanoseconds: 200_000_000)
+
+            guard let imageDataURL = await Screenshot.captureRegion() else {
+                // Cancelled (Esc / no drag) or capture failed — nothing to do.
+                return
+            }
+            runSolve(text: AppDelegate.screenshotOnlyPrompt,
+                     imageDataURL: imageDataURL,
+                     isGodmode: false)
+        }
     }
 
-    /// The core flow: optionally screenshot the screen, call the configured provider,
-    /// then show the answer (and copy it) or surface the error.
+    /// Godmode — screenshot the screen and run the verbatim GODMODE prompt.
+    func godmode() {
+        solve(text: AppDelegate.godmodePrompt, includeScreenshot: true, isGodmode: true)
+    }
+
+    /// Optionally screenshot the screen, then run the streaming solve.
     ///
     /// - Parameters:
     ///   - text: the user's prompt (may be empty for a pure screenshot solve).
     ///   - includeScreenshot: capture the main display and attach it to the request.
-    func solve(text: String, includeScreenshot: Bool) {
+    ///   - isGodmode: whether this is a Godmode answer (drives the autofill behaviour).
+    func solve(text: String, includeScreenshot: Bool, isGodmode: Bool = false) {
         Task { @MainActor in
             let settings = Settings.shared
             let providerId = settings.providerId
 
-            // 1. Require an API key for the chosen provider before doing anything.
-            guard let apiKey = settings.apiKey(for: providerId), !apiKey.isEmpty else {
+            // Require an API key for the chosen provider (Ollama runs keyless).
+            let key = settings.apiKey(for: providerId) ?? ""
+            if providerId != "ollama" && key.isEmpty {
                 let label = Providers.info(providerId)?.label ?? providerId
                 bar.showError("No API key set for \(label). Open Settings to add one.")
                 bar.showForAsk()
@@ -255,10 +366,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 return
             }
 
-            bar.setThinking(true)
-
-            // 2. Optionally grab a screenshot. Hide our own panel first so it isn't
-            //    captured, give the window server a moment to actually hide it, then shoot.
+            // Optionally grab a screenshot. Hide our own panel first so it isn't
+            // captured, let the window server hide it, then shoot.
             var imageDataURL: String? = nil
             if includeScreenshot {
                 bar.hidePanel()
@@ -266,7 +375,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
                 let img = await Screenshot.captureMainDisplay()
                 guard let img else {
-                    bar.setThinking(false)
                     bar.showError("Couldn't capture the screen. Grant Screen Recording "
                                   + "permission in System Settings → Privacy & Security → "
                                   + "Screen Recording, then try again.")
@@ -275,38 +383,166 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 imageDataURL = img
             }
 
-            // 3. Build the prompt. An empty prompt with a screenshot gets a generic
-            //    "read the screenshot and answer" instruction.
-            let prompt: String
-            if text.isEmpty && imageDataURL != nil {
-                prompt = AppDelegate.screenshotOnlyPrompt
-            } else {
-                prompt = text
-            }
-
-            // 4. Call the provider. Empty model string means "use the provider default".
-            let model = settings.model.isEmpty ? nil : settings.model
-            do {
-                let answer = try await Providers.call(
-                    providerId: providerId,
-                    apiKey: apiKey,
-                    prompt: prompt,
-                    imageDataURL: imageDataURL,
-                    model: model
-                )
-                bar.setThinking(false)
-                bar.showAnswer(answer)
-
-                // 5. Auto-copy the answer to the clipboard if enabled.
-                if settings.autoCopyAnswer {
-                    let pasteboard = NSPasteboard.general
-                    pasteboard.clearContents()
-                    pasteboard.setString(answer, forType: .string)
-                }
-            } catch {
-                bar.setThinking(false)
-                bar.showError(error.localizedDescription)
-            }
+            runSolve(text: text,
+                     imageDataURL: imageDataURL,
+                     isGodmode: isGodmode)
         }
+    }
+
+    /// The core streaming flow shared by every entry point. Builds the prompt
+    /// (including prior turns when context is on), streams the answer into the
+    /// panel, records side effects, and on Godmode optionally types the answer
+    /// into the focused field.
+    ///
+    /// Note: `bar.setThinking(true)` adds a placeholder user bubble when there is
+    /// no pending typed message (screenshot / region / godmode entry points), so
+    /// the transcript reads coherently without extra plumbing here.
+    private func runSolve(text: String,
+                          imageDataURL: String?,
+                          isGodmode: Bool) {
+        let settings = Settings.shared
+        let providerId = settings.providerId
+        let apiKey = settings.apiKey(for: providerId) ?? ""
+        let model = settings.model.isEmpty ? nil : settings.model
+
+        // An empty prompt with a screenshot gets a generic "read & answer" instruction.
+        let basePrompt: String
+        if text.isEmpty && imageDataURL != nil {
+            basePrompt = AppDelegate.screenshotOnlyPrompt
+        } else {
+            basePrompt = text
+        }
+
+        // The history question we store mirrors what the user effectively asked.
+        let historyQuestion = (text.isEmpty && imageDataURL != nil) ? "📸 Screenshot" : text
+
+        // Prepend prior turns as plain text context when conversation memory is on.
+        let prompt = buildPrompt(base: basePrompt, useContext: settings.sendContext)
+
+        // Replace any in-flight stream.
+        cancelStream()
+
+        bar.setThinking(true)
+
+        // MainActor-isolated streaming state, mutated only on the MainActor.
+        let state = StreamState()
+
+        streamTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+
+            // Bridge the synchronous @Sendable onDelta callbacks into an ordered
+            // AsyncStream so we consume deltas one-at-a-time, in order, on the
+            // MainActor. The producer runs the provider call; the consumer (this
+            // task) updates the UI as each chunk arrives.
+            let stream = AsyncThrowingStream<String, Error> { continuation in
+                let producer = Task {
+                    do {
+                        try await Providers.stream(
+                            providerId: providerId,
+                            apiKey: apiKey,
+                            prompt: prompt,
+                            imageDataURL: imageDataURL,
+                            model: model
+                        ) { delta in
+                            continuation.yield(delta)
+                        }
+                        continuation.finish()
+                    } catch {
+                        continuation.finish(throwing: error)
+                    }
+                }
+                continuation.onTermination = { _ in producer.cancel() }
+            }
+
+            do {
+                for try await delta in stream {
+                    try Task.checkCancellation()
+                    if !state.started {
+                        state.started = true
+                        self.bar.setThinking(false)
+                        self.bar.beginStreaming()
+                    }
+                    state.accumulated += delta
+                    self.bar.appendDelta(delta)
+                }
+
+                // The stream may be cancelled between the last delta and here.
+                try Task.checkCancellation()
+
+                if state.started { self.bar.endStreaming() }
+                self.finishAnswer(question: historyQuestion,
+                                  answer: state.accumulated,
+                                  isGodmode: isGodmode)
+            } catch is CancellationError {
+                // User pressed Stop / Panic / started a new request: finalize quietly.
+                if state.started { self.bar.endStreaming() }
+                self.bar.setThinking(false)
+            } catch {
+                self.bar.setThinking(false)
+                if state.started { self.bar.endStreaming() }
+                self.bar.showError(error.localizedDescription)
+            }
+            self.streamTask = nil
+        }
+    }
+
+    /// Records the completed answer: memory, auto-copy, history, streak, sound,
+    /// and (for Godmode) optional autofill into the focused field.
+    private func finishAnswer(question: String, answer: String, isGodmode: Bool) {
+        let trimmed = answer.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+
+        // Conversation memory: append both turns for the next request.
+        memory.append(Turn(role: "user", text: question))
+        memory.append(Turn(role: "assistant", text: answer))
+
+        // Auto-copy to the clipboard if enabled.
+        if Settings.shared.autoCopyAnswer {
+            let pasteboard = NSPasteboard.general
+            pasteboard.clearContents()
+            pasteboard.setString(answer, forType: .string)
+        }
+
+        // Persistent side effects on every completed answer.
+        HistoryStore.shared.add(question: question, answer: answer)
+        Streaks.shared.recordSolve()
+        Sound.receive()
+
+        // Godmode autofill: type the answer into the focused field when enabled
+        // and we're trusted for the Accessibility API.
+        if isGodmode && Settings.shared.godmodeAutofill && AX.isTrusted {
+            _ = AX.fillFocusedField(answer)
+        }
+    }
+
+    /// Builds the prompt sent to the provider. When `useContext` is on, prior
+    /// turns are rendered as a labelled transcript above the current prompt so
+    /// any (even non-chat) provider gets conversation memory.
+    private func buildPrompt(base: String, useContext: Bool) -> String {
+        guard useContext, !memory.isEmpty else { return base }
+
+        var lines: [String] = []
+        for turn in memory {
+            let label = turn.role == "assistant" ? "Assistant" : "User"
+            lines.append("\(label): \(turn.text)")
+        }
+        lines.append("User: \(base)")
+        lines.append("Assistant:")
+        return lines.joined(separator: "\n\n")
+    }
+
+    /// Cancel the in-flight streaming task, if any.
+    private func cancelStream() {
+        streamTask?.cancel()
+        streamTask = nil
+    }
+}
+
+// MARK: - NSMenuDelegate
+
+extension AppDelegate: NSMenuDelegate {
+    /// Refresh the dynamic "Solved today: N" row each time the menu opens.
+    func menuWillOpen(_ menu: NSMenu) {
+        solvedTodayItem?.title = "Solved today: \(Streaks.shared.solvedToday)"
     }
 }
