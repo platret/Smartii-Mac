@@ -31,6 +31,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem?
     private let bar = BarController()
     private let settingsController = SettingsWindowController()
+    private let welcomeController = WelcomeWindowController()
 
     // MARK: - Lifecycle
 
@@ -38,6 +39,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         setUpStatusItem()
         wireBarController()
         registerHotKeys()
+
+        // First launch: show the welcome / onboarding window once.
+        welcomeController.onOpenSettings = { [weak self] in
+            self?.settingsController.show()
+        }
+        if !Settings.shared.didOnboard {
+            welcomeController.show()
+        }
     }
 
     // MARK: - Status item & menu
@@ -70,6 +79,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                   action: #selector(menuSettings), keyEquivalent: "")
         settings.target = self
         menu.addItem(settings)
+
+        let welcome = NSMenuItem(title: "Welcome / Help",
+                                 action: #selector(menuWelcome), keyEquivalent: "")
+        welcome.target = self
+        menu.addItem(welcome)
 
         menu.addItem(.separator())
 
@@ -134,6 +148,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func menuSolveScreen() { solveScreen() }
     @objc private func menuGodmode() { godmode() }
     @objc private func menuSettings() { settingsController.show() }
+    @objc private func menuWelcome() { welcomeController.show() }
     @objc private func menuQuit() { NSApp.terminate(nil) }
 
     // MARK: - Flows

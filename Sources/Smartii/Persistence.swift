@@ -67,9 +67,16 @@ final class Settings {
         static let provider = "provider"
         static let model = "model"
         static let autoCopyAnswer = "autoCopyAnswer"
+        static let didOnboard = "didOnboard"
     }
 
     private init() {}
+
+    /// Whether the first-launch welcome window has been shown/dismissed.
+    var didOnboard: Bool {
+        get { defaults.bool(forKey: Key.didOnboard) }
+        set { defaults.set(newValue, forKey: Key.didOnboard) }
+    }
 
     /// Selected provider id (default "gemini").
     var providerId: String {

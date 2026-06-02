@@ -38,5 +38,14 @@ if [[ -f "Resources/AppIcon.icns" ]]; then
 	cp "Resources/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
 fi
 
+# Ad-hoc code-sign the WHOLE bundle. Without this the bundle is only
+# "linker-signed" (Info.plist not bound, resources not sealed) and Gatekeeper
+# reports the app as "damaged" — which xattr cannot fix. An ad-hoc signature
+# (identity "-") seals the bundle so it validates; users still clear quarantine
+# (right-click → Open, or `xattr -dr com.apple.quarantine`) since it's unsigned
+# by a Developer ID.
+codesign --force --deep --sign - "$APP"
+codesign --verify --deep --strict "$APP"
+
 # Emit the absolute path to the assembled bundle.
 echo "$ROOT_DIR/$APP"
