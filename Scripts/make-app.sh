@@ -38,6 +38,11 @@ if [[ -f "Resources/AppIcon.icns" ]]; then
 	cp "Resources/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
 fi
 
+# Copy the in-app logo used by the welcome window.
+if [[ -f "Resources/SmartiiLogo.png" ]]; then
+	cp "Resources/SmartiiLogo.png" "$APP/Contents/Resources/SmartiiLogo.png"
+fi
+
 # Ad-hoc code-sign the WHOLE bundle. Without this the bundle is only
 # "linker-signed" (Info.plist not bound, resources not sealed) and Gatekeeper
 # reports the app as "damaged" — which xattr cannot fix. An ad-hoc signature
