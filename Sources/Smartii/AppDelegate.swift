@@ -75,6 +75,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Lifecycle
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        installEditMenu()
         setUpStatusItem()
         wireBarController()
         registerHotKeys()
@@ -99,6 +100,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
             Updater.shared.checkInBackground()
         }
+    }
+
+    // MARK: - Main menu (enables standard editing shortcuts)
+
+    /// An accessory (LSUIElement) app has no application menu, so the standard
+    /// editing key-equivalents (⌘C/⌘V/⌘X/⌘A/⌘Z) have nothing in the responder
+    /// chain to fire — hence the error beep when pasting. Installing a minimal
+    /// main menu with an Edit submenu restores Cut/Copy/Paste/Select All/Undo in
+    /// every text field, even though the menu bar itself isn't shown.
+    private func installEditMenu() {
+        let mainMenu = NSMenu()
+
+        let appItem = NSMenuItem()
+        mainMenu.addItem(appItem)
+        let appMenu = NSMenu()
+        appItem.submenu = appMenu
+        appMenu.addItem(withTitle: "Quit Smartii", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+
+        let editItem = NSMenuItem()
+        mainMenu.addItem(editItem)
+        let editMenu = NSMenu(title: "Edit")
+        editItem.submenu = editMenu
+        editMenu.addItem(withTitle: "Undo", action: Selector(("undo:")), keyEquivalent: "z")
+        let redo = editMenu.addItem(withTitle: "Redo", action: Selector(("redo:")), keyEquivalent: "z")
+        redo.keyEquivalentModifierMask = [.command, .shift]
+        editMenu.addItem(.separator())
+        editMenu.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+        editMenu.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        editMenu.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        editMenu.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+
+        NSApp.mainMenu = mainMenu
     }
 
     // MARK: - Status item & menu
