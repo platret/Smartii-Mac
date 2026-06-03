@@ -6,12 +6,11 @@
   <title>Smartii for Mac — AI in your menu bar</title>
   <meta name="description" content="A native macOS menu-bar AI assistant. Press a global hotkey anywhere, screenshot your screen, get the answer from your chosen AI provider — in a floating panel and on your clipboard. No Dock icon, bring your own key." />
 
-  <!-- self-contained inline SVG favicon: the Smartii ✦ spark -->
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%237c5cff'/%3E%3Cpath d='M16 6l2.4 5.9 6.1 2.1-6.1 2.1L16 22l-2.4-5.9L7.5 14l6.1-2.1z' fill='%23fff'/%3E%3C/svg%3E" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%238b7bff'/%3E%3Cpath d='M16 6l2.4 5.9 6.1 2.1-6.1 2.1L16 22l-2.4-5.9L7.5 14l6.1-2.1z' fill='%23fff'/%3E%3C/svg%3E" />
 
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@500;600&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700;800&family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@500;600&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="styles.css" />
 
   <meta property="og:title" content="Smartii for Mac — AI in your menu bar" />
@@ -19,8 +18,21 @@
   <meta name="twitter:card" content="summary_large_image" />
 </head>
 <body>
-  <div class="bg-aurora" aria-hidden="true"></div>
+  <!-- background stack -->
+  <canvas id="shader" aria-hidden="true"></canvas>
   <div class="bg-grid" aria-hidden="true"></div>
+  <div class="bg-grain" aria-hidden="true"></div>
+  <div class="spotlight" id="spotlight" aria-hidden="true"></div>
+
+  <!-- gradient defs for the godmode bolt -->
+  <svg width="0" height="0" aria-hidden="true" style="position:absolute">
+    <defs>
+      <linearGradient id="boltgrad" x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0" stop-color="#ffcb6b"/>
+        <stop offset="1" stop-color="#ff7a3d"/>
+      </linearGradient>
+    </defs>
+  </svg>
 
   <header class="nav" id="nav">
     <a class="brand" href="#top" aria-label="Smartii for Mac home">
@@ -35,29 +47,26 @@
       <a href="#godmode">Godmode</a>
       <a href="#install">Install</a>
     </nav>
-    <a class="nav-cta" href="https://github.com/platret/Smartii-Mac/releases/latest" target="_blank" rel="noopener">
-      Download
-    </a>
+    <a class="nav-cta" href="https://github.com/platret/Smartii-Mac/releases/latest" target="_blank" rel="noopener">Download</a>
   </header>
 
   <main id="top">
     <!-- ───────────────────────── HERO ───────────────────────── -->
     <section class="hero">
-      <div class="hero-copy">
-        <span class="eyebrow">
+      <div class="hero-copy in">
+        <span class="eyebrow reveal-up" data-delay="1">
           <span class="dot" aria-hidden="true"></span>
           Native macOS 14+ · AppKit · no Dock icon
         </span>
-        <h1>
-          Smartii for Mac.
-          <span class="grad">AI in your menu bar.</span>
+        <h1 class="reveal-up" data-delay="2">
+          AI in your <span class="grad">menu bar.</span>
         </h1>
-        <p class="lead">
+        <p class="lead reveal-up" data-delay="3">
           Press a global hotkey anywhere on your Mac. Smartii screenshots your screen,
           asks your chosen AI provider, and drops the answer into a floating panel —
-          and onto your clipboard. It lives in the menu bar. No window to hunt for.
+          and onto your clipboard. Then it disappears.
         </p>
-        <div class="hero-ctas">
+        <div class="hero-ctas reveal-up" data-delay="4">
           <a class="btn primary" href="https://github.com/platret/Smartii-Mac/releases/latest" target="_blank" rel="noopener">
             <svg viewBox="0 0 24 24" class="ico" aria-hidden="true"><path d="M12 3v12m0 0 4-4m-4 4-4-4M5 21h14"/></svg>
             Download for Mac
@@ -67,240 +76,192 @@
             View source
           </a>
         </div>
-        <div class="kbd-row" role="list">
-          <span class="kbd-combo" role="listitem">
-            <kbd>⌘</kbd><kbd>⇧</kbd><kbd>S</kbd>
-            <span class="kbd-label">summon</span>
-          </span>
-          <span class="kbd-combo" role="listitem">
-            <kbd>⌥</kbd><kbd>⇧</kbd><kbd>S</kbd>
-            <span class="kbd-label">solve screen</span>
-          </span>
-          <span class="kbd-combo gold" role="listitem">
-            <kbd>⌥</kbd><kbd>⇧</kbd><kbd>G</kbd>
-            <span class="kbd-label">Godmode</span>
-          </span>
-          <span class="kbd-combo" role="listitem">
-            <kbd>⌥</kbd><kbd>⇧</kbd><kbd>X</kbd>
-            <span class="kbd-label">panic</span>
-          </span>
+        <div class="kbd-row reveal-up" data-delay="5" role="list">
+          <span class="kbd-combo" role="listitem"><kbd>⌘</kbd><kbd>⇧</kbd><kbd>S</kbd><span class="kbd-label">summon</span></span>
+          <span class="kbd-combo" role="listitem"><kbd>⌥</kbd><kbd>⇧</kbd><kbd>S</kbd><span class="kbd-label">solve</span></span>
+          <span class="kbd-combo gold" role="listitem"><kbd>⌥</kbd><kbd>⇧</kbd><kbd>G</kbd><span class="kbd-label">Godmode</span></span>
+          <span class="kbd-combo" role="listitem"><kbd>⌥</kbd><kbd>⇧</kbd><kbd>X</kbd><span class="kbd-label">panic</span></span>
         </div>
       </div>
 
       <!-- live HTML/CSS mock of the macOS menu bar + Smartii dropdown -->
-      <div class="hero-art">
+      <div class="hero-art reveal-up in" data-delay="3">
         <div class="mac" aria-hidden="true">
-          <!-- the menu bar across the top -->
           <div class="menubar">
-            <span class="apple">
-              <svg viewBox="0 0 24 24"><path d="M16.4 12.6c0-2.3 1.9-3.4 2-3.5a4.3 4.3 0 0 0-3.4-1.9c-1.4-.1-2.8.9-3.5.9s-1.8-.8-3-.8a4.6 4.6 0 0 0-3.9 2.4c-1.6 2.9-.4 7.2 1.2 9.5.8 1.2 1.7 2.4 2.9 2.4s1.6-.8 3-.8 1.8.8 3 .7 2-1.1 2.8-2.3a9.5 9.5 0 0 0 1.2-2.6 4.1 4.1 0 0 1-2.3-3.7zM14.6 5.4A4 4 0 0 0 15.6 2a4.2 4.2 0 0 0-2.7 1.4 3.8 3.8 0 0 0-1 3.3 3.5 3.5 0 0 0 2.7-1.3z" fill="currentColor" stroke="none"/></svg>
-            </span>
-            <span class="m">Finder</span>
-            <span class="m">File</span>
-            <span class="m">Edit</span>
-            <span class="m">View</span>
+            <span class="apple"><svg viewBox="0 0 24 24"><path d="M16.4 12.6c0-2.3 1.9-3.4 2-3.5a4.3 4.3 0 0 0-3.4-1.9c-1.4-.1-2.8.9-3.5.9s-1.8-.8-3-.8a4.6 4.6 0 0 0-3.9 2.4c-1.6 2.9-.4 7.2 1.2 9.5.8 1.2 1.7 2.4 2.9 2.4s1.6-.8 3-.8 1.8.8 3 .7 2-1.1 2.8-2.3a9.5 9.5 0 0 0 1.2-2.6 4.1 4.1 0 0 1-2.3-3.7zM14.6 5.4A4 4 0 0 0 15.6 2a4.2 4.2 0 0 0-2.7 1.4 3.8 3.8 0 0 0-1 3.3 3.5 3.5 0 0 0 2.7-1.3z" fill="currentColor" stroke="none"/></svg></span>
+            <span class="m">Finder</span><span class="m">File</span><span class="m">Edit</span><span class="m">View</span>
             <span class="menubar-spacer"></span>
-            <span class="m status">
-              <svg class="wifi" viewBox="0 0 24 24"><path d="M5 12.5a10 10 0 0 1 14 0M8 16a5 5 0 0 1 8 0M12 19h.01"/></svg>
-            </span>
-            <!-- the Smartii menu-bar item, active -->
-            <span class="m smartii active">
-              <svg class="spark" viewBox="0 0 24 24"><path d="M12 3l1.9 4.7L18.6 9.6l-4.7 1.9L12 16.2l-1.9-4.7L5.4 9.6l4.7-1.9z"/></svg>
-            </span>
+            <span class="m status"><svg class="wifi" viewBox="0 0 24 24"><path d="M5 12.5a10 10 0 0 1 14 0M8 16a5 5 0 0 1 8 0M12 19h.01"/></svg></span>
+            <span class="m smartii active"><svg class="spark" viewBox="0 0 24 24"><path d="M12 3l1.9 4.7L18.6 9.6l-4.7 1.9L12 16.2l-1.9-4.7L5.4 9.6l4.7-1.9z"/></svg></span>
             <span class="m clock">10:24</span>
           </div>
-
-          <!-- the dropdown panel hanging off the Smartii item -->
           <div class="dropdown">
             <div class="dropdown-tip"></div>
             <div class="dd-head">
-              <span class="dd-spark">
-                <svg viewBox="0 0 24 24"><path d="M12 3l1.9 4.7L18.6 9.6l-4.7 1.9L12 16.2l-1.9-4.7L5.4 9.6l4.7-1.9z"/></svg>
-              </span>
-              <div>
-                <strong>Smartii</strong>
-                <span class="dd-provider">Gemini 2.0 Flash</span>
-              </div>
+              <span class="dd-spark"><svg viewBox="0 0 24 24"><path d="M12 3l1.9 4.7L18.6 9.6l-4.7 1.9L12 16.2l-1.9-4.7L5.4 9.6l4.7-1.9z"/></svg></span>
+              <div><strong>Smartii</strong><span class="dd-provider">Gemini 2.0 Flash</span></div>
               <span class="dd-tag">⚡ Godmode</span>
             </div>
             <div class="dd-prompt">
-              <span class="dd-shot">
-                <svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h2l1.5-2h7L19 5h2a2 2 0 0 1 2 2"/><rect x="1" y="7" width="22" height="14" rx="2"/><circle cx="12" cy="14" r="3.5"/></svg>
-                screen captured
-              </span>
+              <span class="dd-shot"><svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h2l1.5-2h7L19 5h2a2 2 0 0 1 2 2"/><rect x="1" y="7" width="22" height="14" rx="2"/><circle cx="12" cy="14" r="3.5"/></svg>screen captured</span>
             </div>
             <div class="dd-answer">
-              <p><b>C) O(log n)</b> — binary search halves the search space each step, so it
-              takes at most log₂n comparisons on a sorted array.</p>
-              <div class="dd-copied">
-                <svg viewBox="0 0 24 24"><path d="m5 13 4 4L19 7"/></svg>
-                Copied to clipboard
-              </div>
+              <p><b>C) O(log n)</b> — binary search halves the search space each step, so it takes at most log₂n comparisons on a sorted array.</p>
+              <div class="dd-copied"><svg viewBox="0 0 24 24"><path d="m5 13 4 4L19 7"/></svg>Copied to clipboard</div>
             </div>
           </div>
         </div>
       </div>
     </section>
 
-    <!-- ───────────────────────── PROVIDER STRIP ───────────────────────── -->
-    <section class="strip" aria-label="Supported providers">
-      <span>Bring your own key</span>
-      <ul>
-        <li>Gemini</li><li>Groq</li><li>OpenRouter</li><li>Hugging&nbsp;Face</li>
-        <li>Anthropic</li><li>OpenAI</li><li>Perplexity</li>
-      </ul>
+    <!-- ───────────── ILLUMINATE: the manifesto ───────────── -->
+    <section class="stage" data-illuminate>
+      <div class="sticky">
+        <p class="illuminate" data-words>
+          <span class="stage-tag eyebrow">— the idea</span>
+          Press a key. Anywhere. Smartii sees your whole screen, asks your model, and hands back <span class="accent">the answer</span> — then gets out of your way.
+        </p>
+      </div>
     </section>
 
-    <!-- ───────────────────────── FEATURES ───────────────────────── -->
-    <section class="features" id="features">
-      <div class="section-head">
+    <!-- ───────────── PROVIDER MARQUEE ───────────── -->
+    <div class="marquee" aria-label="Supported providers">
+      <span class="tag">Bring your own key</span>
+      <div class="marquee-track" aria-hidden="true">
+        <span>Gemini</span><span>·</span><span>Groq</span><span>·</span><span>OpenRouter</span><span>·</span><span>Hugging Face</span><span>·</span><span>Anthropic</span><span>·</span><span>OpenAI</span><span>·</span><span>Perplexity</span><span>·</span>
+        <span>Gemini</span><span>·</span><span>Groq</span><span>·</span><span>OpenRouter</span><span>·</span><span>Hugging Face</span><span>·</span><span>Anthropic</span><span>·</span><span>OpenAI</span><span>·</span><span>Perplexity</span><span>·</span>
+      </div>
+    </div>
+
+    <!-- ───────────── FEATURES ───────────── -->
+    <section class="features wrap" id="features">
+      <div class="section-head reveal-up">
         <span class="eyebrow">Why Smartii for Mac</span>
-        <h2>An assistant that lives in the menu bar.</h2>
+        <h2>An assistant that lives in the menu&nbsp;bar.</h2>
         <p>Not a window. Not a tab. A keystroke that reaches across every app on your screen.</p>
       </div>
-      <div class="grid-3">
-        <article class="card">
-          <div class="ico-box">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2" y="4" width="20" height="4" rx="1.5"/><path d="M6 6h.01M9 6h.01M12 6h.01"/><rect x="6" y="11" width="12" height="9" rx="2"/></svg>
-          </div>
+      <div class="bento">
+        <article class="card wide reveal-up">
+          <div class="ico-box"><svg viewBox="0 0 24 24"><rect x="2" y="4" width="20" height="4" rx="1.5"/><path d="M6 6h.01M9 6h.01M12 6h.01"/><rect x="6" y="11" width="12" height="9" rx="2"/></svg></div>
           <h3>Menu bar, not a window</h3>
           <p>Runs as an accessory app — no Dock icon, no clutter. A ✦ in your menu bar is the whole UI. Answers appear in a floating panel that vanishes when you're done.</p>
         </article>
-        <article class="card">
-          <div class="ico-box">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h2l1.5-2h7L19 5h2a2 2 0 0 1 2 2"/><rect x="1" y="7" width="22" height="14" rx="2"/><circle cx="12" cy="14" r="3.5"/></svg>
-          </div>
-          <h3>Sees your whole screen</h3>
-          <p>Hit Solve and Smartii captures your main display with ScreenCaptureKit, then sends it to a vision-capable model. Errors, diagrams, exams, any app — not just the browser.</p>
-        </article>
-        <article class="card">
-          <div class="ico-box">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/><path d="M12 14v3"/></svg>
-          </div>
-          <h3>Your key, your data</h3>
-          <p>Bring your own API key. It's stored in the macOS Keychain and sent straight to the provider you chose. No Smartii server, no telemetry, no middleman.</p>
-        </article>
-        <article class="card">
-          <div class="ico-box">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18"/></svg>
-          </div>
-          <h3>7 providers in one</h3>
-          <p>Gemini, Groq, OpenRouter, Hugging Face, Anthropic, OpenAI, Perplexity. Switch from the menu. Vision routing picks the right model automatically when an image is attached.</p>
-        </article>
-        <article class="card">
-          <div class="ico-box">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M7 10h.01M11 10h.01M15 10h.01M7 14h10"/></svg>
-          </div>
-          <h3>Global hotkeys</h3>
-          <p>Carbon-registered shortcuts work system-wide, in any frontmost app. Summon, solve the screen, fire Godmode, or panic-hide — all without touching the trackpad.</p>
-        </article>
-        <article class="card highlight">
-          <div class="ico-box gold">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13 2 4.5 13.5H11l-1 8.5L19.5 10H13z"/></svg>
-          </div>
+        <article class="card highlight reveal-up">
+          <div class="ico-box gold"><svg viewBox="0 0 24 24"><path d="M13 2 4.5 13.5H11l-1 8.5L19.5 10H13z"/></svg></div>
           <h3>⚡ Godmode</h3>
           <p>One press → Smartii reads everything on screen and answers it all, no typing. Quizzes, code, errors, multiple-choice — numbered, with the reasoning and the fix.</p>
         </article>
+        <article class="card reveal-up">
+          <div class="ico-box"><svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h2l1.5-2h7L19 5h2a2 2 0 0 1 2 2"/><rect x="1" y="7" width="22" height="14" rx="2"/><circle cx="12" cy="14" r="3.5"/></svg></div>
+          <h3>Sees your whole screen</h3>
+          <p>Captures your display with ScreenCaptureKit and sends it to a vision model. Errors, diagrams, exams, any app — not just the browser.</p>
+        </article>
+        <article class="card reveal-up">
+          <div class="ico-box"><svg viewBox="0 0 24 24"><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/><path d="M12 14v3"/></svg></div>
+          <h3>Your key, your data</h3>
+          <p>Bring your own API key. Stored in the macOS Keychain, sent straight to the provider you chose. No Smartii server, no telemetry, no middleman.</p>
+        </article>
+        <article class="card reveal-up">
+          <div class="ico-box"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18"/></svg></div>
+          <h3>7 providers in one</h3>
+          <p>Gemini, Groq, OpenRouter, Hugging Face, Anthropic, OpenAI, Perplexity. Switch from the menu. Vision routing picks the right model automatically.</p>
+        </article>
       </div>
     </section>
 
-    <!-- ───────────────────────── HOTKEYS ───────────────────────── -->
-    <section class="hotkeys" id="hotkeys">
-      <div class="section-head">
+    <!-- ───────────── ILLUMINATE: what it sees ───────────── -->
+    <section class="stage" data-illuminate>
+      <div class="sticky">
+        <p class="illuminate" data-words>
+          <span class="stage-tag eyebrow">— what it sees</span>
+          Not just a browser tab. The <span class="accent">entire desktop</span> — every app, every window, the whole screen.
+        </p>
+      </div>
+    </section>
+
+    <!-- ───────────── HOTKEYS ───────────── -->
+    <section class="hotkeys wrap" id="hotkeys">
+      <div class="section-head reveal-up">
         <span class="eyebrow">Muscle memory</span>
-        <h2>Four keys. Whole screen.</h2>
+        <h2>Four keys. Whole&nbsp;screen.</h2>
         <p>Every shortcut is global — they fire from inside any app you're using.</p>
       </div>
       <div class="hotkey-grid">
-        <div class="hotkey">
+        <div class="hotkey reveal-up">
           <span class="kbd-combo"><kbd>⌘</kbd><kbd>⇧</kbd><kbd>S</kbd></span>
-          <div>
-            <strong>Summon / Ask</strong>
-            <p>Toggle the floating panel. Type a question and Send, or Solve to attach a screenshot.</p>
-          </div>
+          <div><strong>Summon / Ask</strong><p>Toggle the floating panel. Type a question and Send, or Solve to attach a screenshot.</p></div>
         </div>
-        <div class="hotkey">
+        <div class="hotkey reveal-up">
           <span class="kbd-combo"><kbd>⌥</kbd><kbd>⇧</kbd><kbd>S</kbd></span>
-          <div>
-            <strong>Solve screen</strong>
-            <p>Instantly screenshot the main display and ask the model what's on it.</p>
-          </div>
+          <div><strong>Solve screen</strong><p>Instantly screenshot the main display and ask the model what's on it.</p></div>
         </div>
-        <div class="hotkey gold">
+        <div class="hotkey gold reveal-up">
           <span class="kbd-combo gold"><kbd>⌥</kbd><kbd>⇧</kbd><kbd>G</kbd></span>
-          <div>
-            <strong>Godmode</strong>
-            <p>Read the whole screen and answer every question, problem and error — automatically.</p>
-          </div>
+          <div><strong>Godmode</strong><p>Read the whole screen and answer every question, problem and error — automatically.</p></div>
         </div>
-        <div class="hotkey">
+        <div class="hotkey reveal-up">
           <span class="kbd-combo"><kbd>⌥</kbd><kbd>⇧</kbd><kbd>X</kbd></span>
-          <div>
-            <strong>Panic</strong>
-            <p>Hide the panel instantly. One keystroke and the screen is yours again.</p>
-          </div>
+          <div><strong>Panic</strong><p>Hide the panel instantly. One keystroke and the screen is yours again.</p></div>
         </div>
       </div>
     </section>
 
-    <!-- ───────────────────────── GODMODE ───────────────────────── -->
+    <!-- ───────────── ILLUMINATE: godmode lead-in (gold) ───────────── -->
+    <section class="stage" data-illuminate>
+      <div class="sticky">
+        <p class="illuminate gold" data-words>
+          <span class="stage-tag eyebrow gold">⚡ the big one</span>
+          One press. Smartii finds every question on screen and <span class="accent">answers them all</span> — without you typing a word.
+        </p>
+      </div>
+    </section>
+
+    <!-- ───────────── GODMODE ───────────── -->
     <section class="godmode" id="godmode">
       <div class="godmode-glow" aria-hidden="true"></div>
       <div class="godmode-inner">
-        <div class="godmode-copy">
-          <span class="eyebrow gold">⚡ The big one</span>
-          <h2>Godmode <span class="grad-gold">does it all for you.</span></h2>
+        <div class="godmode-copy reveal-up">
+          <span class="eyebrow gold">⚡ Godmode</span>
+          <h2>It does it all <span class="grad-gold">for you.</span></h2>
           <p class="lead">
             Hit <span class="kbd-combo gold inline"><kbd>⌥</kbd><kbd>⇧</kbd><kbd>G</kbd></span>.
             Smartii captures your entire screen, finds every question, problem, error or task on it,
-            and answers them all — directly and completely, without you typing a word.
+            and answers them all — directly and completely.
           </p>
           <ul class="check-list">
-            <li><svg viewBox="0 0 24 24" class="chk" aria-hidden="true"><path d="m5 13 4 4L19 7"/></svg>Multiple-choice: the correct letter <em>and</em> the reasoning</li>
-            <li><svg viewBox="0 0 24 24" class="chk" aria-hidden="true"><path d="m5 13 4 4L19 7"/></svg>Code or error: the actual fix, ready to paste</li>
-            <li><svg viewBox="0 0 24 24" class="chk" aria-hidden="true"><path d="m5 13 4 4L19 7"/></svg>Multiple questions: every answer, numbered in order</li>
-            <li><svg viewBox="0 0 24 24" class="chk" aria-hidden="true"><path d="m5 13 4 4L19 7"/></svg>Whatever's on screen — Finder, an IDE, a PDF, a quiz</li>
+            <li><svg viewBox="0 0 24 24" class="chk"><path d="m5 13 4 4L19 7"/></svg><span>Multiple-choice: the correct letter <em>and</em> the reasoning</span></li>
+            <li><svg viewBox="0 0 24 24" class="chk"><path d="m5 13 4 4L19 7"/></svg><span>Code or error: the actual fix, <em>ready to paste</em></span></li>
+            <li><svg viewBox="0 0 24 24" class="chk"><path d="m5 13 4 4L19 7"/></svg><span>Multiple questions: every answer, <em>numbered in order</em></span></li>
+            <li><svg viewBox="0 0 24 24" class="chk"><path d="m5 13 4 4L19 7"/></svg><span>Whatever's on screen — Finder, an IDE, a PDF, a quiz</span></li>
           </ul>
-          <a class="btn primary" href="https://github.com/platret/Smartii-Mac/releases/latest" target="_blank" rel="noopener">Get Smartii</a>
+          <a class="btn gold" href="https://github.com/platret/Smartii-Mac/releases/latest" target="_blank" rel="noopener">Get Smartii</a>
         </div>
-        <div class="godmode-art" aria-hidden="true">
-          <div class="god-press"><kbd>⌥</kbd><kbd>⇧</kbd><kbd>G</kbd></div>
+        <div class="godmode-art reveal-up" aria-hidden="true">
           <svg class="god-bolt" viewBox="0 0 24 24"><path d="M13 2 4.5 13.5H11l-1 8.5L19.5 10H13z"/></svg>
+          <div class="god-press"><kbd>⌥</kbd><kbd>⇧</kbd><kbd>G</kbd></div>
         </div>
       </div>
     </section>
 
-    <!-- ───────────────────────── INSTALL ───────────────────────── -->
-    <section class="install" id="install">
-      <div class="section-head">
+    <!-- ───────────── INSTALL ───────────── -->
+    <section class="install wrap" id="install">
+      <div class="section-head reveal-up">
         <span class="eyebrow">Setup</span>
-        <h2>Install in under a minute.</h2>
+        <h2>Install in under a&nbsp;minute.</h2>
         <p>No App Store, no sign-up. Download, drag, open.</p>
       </div>
       <ol class="steps">
-        <li>
-          <span class="step-n">1</span>
-          <div><strong>Download</strong> the <code>.zip</code> from <a href="https://github.com/platret/Smartii-Mac/releases/latest" target="_blank" rel="noopener">GitHub Releases</a> and unzip it.</div>
-        </li>
-        <li>
-          <span class="step-n">2</span>
-          <div><strong>Move</strong> <code>Smartii.app</code> into your <code>/Applications</code> folder.</div>
-        </li>
-        <li>
-          <span class="step-n">3</span>
-          <div><strong>Right-click → Open</strong> the first time. The app is unsigned, so macOS asks you to confirm — click <em>Open</em>.</div>
-        </li>
-        <li>
-          <span class="step-n">4</span>
-          <div><strong>Grant Screen Recording</strong> permission when prompted, so Smartii can screenshot your display. Then pick a provider and paste your API key in Settings.</div>
-        </li>
+        <li class="reveal-up"><span class="step-n">1</span><div><strong>Download</strong> <code>Smartii.dmg</code> from <a href="https://github.com/platret/Smartii-Mac/releases/latest" target="_blank" rel="noopener">GitHub Releases</a> and open it.</div></li>
+        <li class="reveal-up"><span class="step-n">2</span><div><strong>Drag</strong> <code>Smartii</code> into the <code>Applications</code> folder shown in the window.</div></li>
+        <li class="reveal-up"><span class="step-n">3</span><div><strong>Right-click → Open</strong> the first time. The app is unsigned, so macOS asks you to confirm — click <em>Open</em>.</div></li>
+        <li class="reveal-up"><span class="step-n">4</span><div><strong>Grant Screen Recording</strong> when prompted, then pick a provider and paste your API key in Settings.</div></li>
       </ol>
-      <div class="install-cta">
+      <div class="install-cta reveal-up">
         <a class="btn primary" href="https://github.com/platret/Smartii-Mac/releases/latest" target="_blank" rel="noopener">
           <svg viewBox="0 0 24 24" class="ico" aria-hidden="true"><path d="M12 3v12m0 0 4-4m-4 4-4-4M5 21h14"/></svg>
           Download the latest release
         </a>
-        <p class="muted small">macOS 14 (Sonoma) or later · Apple silicon &amp; Intel · MIT licensed</p>
+        <p class="muted small">macOS 14 (Sonoma) or later · Apple silicon &amp; Intel · MIT licensed · updates itself</p>
       </div>
     </section>
   </main>
@@ -308,10 +269,8 @@
   <footer>
     <div class="footer-inner">
       <div class="footer-brand">
-        <span class="brand-mark sm" aria-hidden="true">
-          <svg viewBox="0 0 24 24"><path d="M12 3l1.9 4.7L18.6 9.6l-4.7 1.9L12 16.2l-1.9-4.7L5.4 9.6l4.7-1.9z"/></svg>
-        </span>
-        <span>Smartii for Mac · MIT licensed · <a href="https://github.com/platret/Smartii-Mac" target="_blank" rel="noopener">github.com/platret/Smartii-Mac</a></span>
+        <span class="brand-mark sm" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 3l1.9 4.7L18.6 9.6l-4.7 1.9L12 16.2l-1.9-4.7L5.4 9.6l4.7-1.9z"/></svg></span>
+        <span>Smartii for Mac · MIT · <a href="https://github.com/platret/Smartii-Mac" target="_blank" rel="noopener">github.com/platret/Smartii-Mac</a></span>
       </div>
       <div class="footer-links">
         <a href="https://github.com/platret/Smartii-Mac/issues" target="_blank" rel="noopener">Report a bug</a>
@@ -320,5 +279,7 @@
       </div>
     </div>
   </footer>
+
+  <script src="app.js"></script>
 </body>
 </html>
