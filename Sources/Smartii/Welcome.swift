@@ -646,7 +646,9 @@ final class WelcomeWindowController: NSObject {
     /// status shows a red ✗ with the provider's error text.
     @objc private func testKeyTapped() {
         guard !isTesting else { return }
-        let key = keyField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Read the live field editor so a just-pasted key isn't missed.
+        let key = (keyField.currentEditor()?.string ?? keyField.stringValue)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         guard !key.isEmpty else {
             setTestStatus("Paste an API key first.", color: C.sub)
             return

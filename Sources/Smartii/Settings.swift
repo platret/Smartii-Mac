@@ -587,10 +587,23 @@ final class SettingsWindowController: NSObject {
         NSWorkspace.shared.open(url)
     }
 
+    /// The key as currently typed/pasted — reads the live field editor so a value
+    /// pasted right before clicking Test/Save isn't missed (stringValue lags until
+    /// the field commits).
+    private func liveKey() -> String {
+        (keyField.currentEditor()?.string ?? keyField.stringValue)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     @objc private func testKeyTapped() {
         let id = selectedProviderId
-        let key = keyField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let key = liveKey()
         let model = selectedModel
+        guard !key.isEmpty else {
+            testKeyStatus.stringValue = "Paste a key first"
+            testKeyStatus.textColor = S.bad
+            return
+        }
         testKeyStatus.stringValue = "Testing…"
         testKeyStatus.textColor = Palette.secondary
         testKeyButton.isEnabled = false
@@ -607,13 +620,19 @@ final class SettingsWindowController: NSObject {
                 await MainActor.run {
                     guard let self else { return }
                     self.testKeyStatus.stringValue = "Works ✓"
+                    self.testKeyStatus.toolTip = nil
                     self.testKeyStatus.textColor = S.ok
                     self.testKeyButton.isEnabled = true
                 }
+            } catch is CancellationError {
+                // re-tested; ignore
             } catch {
+                let msg = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                let short = msg.count > 90 ? String(msg.prefix(90)) + "…" : msg
                 await MainActor.run {
                     guard let self else { return }
-                    self.testKeyStatus.stringValue = "Failed ✗"
+                    self.testKeyStatus.stringValue = "✗ " + short
+                    self.testKeyStatus.toolTip = msg
                     self.testKeyStatus.textColor = S.bad
                     self.testKeyButton.isEnabled = true
                 }
@@ -654,7 +673,8 @@ final class SettingsWindowController: NSObject {
         settings.soundsEnabled = (soundsCheckbox.state == .on)
         settings.sendContext = (contextCheckbox.state == .on)
         settings.godmodeAutofill = (godmodeCheckbox.state == .on)
-        settings.setAPIKey(keyField.stringValue, for: id)
+        let key = liveKey()
+        if !key.isEmpty { settings.setAPIKey(key, for: id) }
         statusLabel.stringValue = "Saved ✓"
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.55) { [weak self] in
             self?.close()
