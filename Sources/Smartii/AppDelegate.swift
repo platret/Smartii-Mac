@@ -384,6 +384,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     ///   - text: the user's prompt (may be empty for a pure screenshot solve).
     ///   - includeScreenshot: capture the main display and attach it to the request.
     ///   - isGodmode: whether this is a Godmode answer (drives the autofill behaviour).
+    /// Turns a provider error into a friendlier message, adding a hint for the
+    /// common OpenRouter free-model "data policy" rejection.
+    private func friendlyError(_ error: Error) -> String {
+        let msg = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+        let lower = msg.lowercased()
+        if lower.contains("data policy") || lower.contains("no endpoints") || lower.contains("no allowed providers") {
+            return msg + "\n\nTip: free OpenRouter models need a one-time opt-in — enable them at openrouter.ai/settings/privacy, then try again."
+        }
+        return msg
+    }
+
     func solve(text: String, includeScreenshot: Bool, isGodmode: Bool = false) {
         Task { @MainActor in
             let settings = Settings.shared
@@ -503,17 +514,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 try Task.checkCancellation()
 
                 if state.started { self.bar.endStreaming() }
-                self.finishAnswer(question: historyQuestion,
-                                  answer: state.accumulated,
-                                  isGodmode: isGodmode)
+
+                if state.accumulated.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    // Streaming produced no visible text — common with reasoning
+                    // models (e.g. Nemotron) that stream their thinking but the
+                    // final answer arrives via the non-streaming field. Fall back.
+                    let answer = try await Providers.call(
+                        providerId: providerId, apiKey: apiKey, prompt: prompt,
+                        imageDataURL: imageDataURL, model: model)
+                    self.bar.setThinking(false)
+                    self.bar.showAnswer(answer)
+                    self.finishAnswer(question: historyQuestion, answer: answer, isGodmode: isGodmode)
+                } else {
+                    self.finishAnswer(question: historyQuestion,
+                                      answer: state.accumulated,
+                                      isGodmode: isGodmode)
+                }
             } catch is CancellationError {
                 // User pressed Stop / Panic / started a new request: finalize quietly.
                 if state.started { self.bar.endStreaming() }
                 self.bar.setThinking(false)
             } catch {
-                self.bar.setThinking(false)
+                // Streaming failed — try one normal (non-streaming) request before
+                // surfacing the error, so an SSE-specific hiccup doesn't block the chat.
                 if state.started { self.bar.endStreaming() }
-                self.bar.showError(error.localizedDescription)
+                do {
+                    try Task.checkCancellation()
+                    let answer = try await Providers.call(
+                        providerId: providerId, apiKey: apiKey, prompt: prompt,
+                        imageDataURL: imageDataURL, model: model)
+                    self.bar.setThinking(false)
+                    self.bar.showAnswer(answer)
+                    self.finishAnswer(question: historyQuestion, answer: answer, isGodmode: isGodmode)
+                } catch is CancellationError {
+                    self.bar.setThinking(false)
+                } catch let fallbackError {
+                    self.bar.setThinking(false)
+                    self.bar.showError(self.friendlyError(fallbackError))
+                }
             }
             self.streamTask = nil
         }

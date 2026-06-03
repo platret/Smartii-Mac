@@ -485,6 +485,9 @@ final class BarController: NSObject, NSTextFieldDelegate {
     // Input pill.
     private let inputPill = NSView()
     private let inputField = InputTextField()
+    /// Mirror of the input field editor's text, updated on every keystroke, so a
+    /// submit always sees the latest text regardless of commit/focus timing.
+    private var liveText = ""
     private let providerChip = NSButton()
     private let sendButton: NSButton
 
@@ -1039,22 +1042,35 @@ final class BarController: NSObject, NSTextFieldDelegate {
     /// and dispatches the appropriate callback. Screenshot submissions are prefixed
     /// with a camera emoji to mirror what the model is being shown.
     private func submitFromField(includeScreenshot: Bool) {
-        // While the user is typing, `stringValue` still holds the LAST COMMITTED
-        // value — the in-progress text lives in the field editor. Reading
-        // stringValue here returned "" and silently dropped the message (the hang).
-        let raw = inputField.currentEditor()?.string ?? inputField.stringValue
+        // Read the text as robustly as possible. While editing, `stringValue` lags
+        // (it holds the last committed value), and clicking Send can drop the field's
+        // first responder before it commits — so prefer the live field editor, then
+        // the keystroke mirror, then stringValue.
+        let raw = inputField.currentEditor()?.string
+            ?? (liveText.isEmpty ? inputField.stringValue : liveText)
         let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
         let display = includeScreenshot ? "📸 \(text)" : text
         appendUserBubble(display)
-        // Clear both the live field editor and the value.
+        // Clear the live field editor, the mirror, and the value.
         inputField.currentEditor()?.string = ""
         inputField.stringValue = ""
+        liveText = ""
         hasPendingUser = true
         onSubmit?(text, includeScreenshot)
     }
 
     // MARK: NSTextFieldDelegate
+
+    /// Mirror every keystroke so we always have the latest text even if the field
+    /// hasn't committed (clicking Send can steal focus before commit).
+    func controlTextDidChange(_ obj: Notification) {
+        if let editor = obj.userInfo?["NSFieldEditor"] as? NSText {
+            liveText = editor.string
+        } else {
+            liveText = inputField.stringValue
+        }
+    }
 
     /// Maps Return / Cmd+Return / Esc in the input field to the right action.
     func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
